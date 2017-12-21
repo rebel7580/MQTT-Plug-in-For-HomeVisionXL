@@ -1,3 +1,5 @@
+**This is Beta Software. Please report issues via the homevision users group**
+
 # Overview
 
 The MQTT Client Plug-in provides an client interface to MQTT for HomeVision. The MQTT interface has two distinct areas

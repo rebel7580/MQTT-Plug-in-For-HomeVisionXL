@@ -1,12 +1,12 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.16 $
-# $Date: 2017/12/21 03:03:32 $
+# $Revision: 1.18 $
+# $Date: 2017/12/22 19:14:47 $
 
 hvImport debug
 
-set version {$Id: hvmqtt.hap,v 1.16 2017/12/21 03:03:32 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.18 2017/12/22 19:14:47 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -242,14 +242,21 @@ proc subscribe {{type sub}} {
 proc sendCmd {name cmd} {
     global mymqtt
 
+    if {$name in {pub}} {
+        set cmd [lassign $cmd topic]
+    } elseif {$name in {sub unsub}} {
+        lassign $cmd topic
+        set cmd "subrecv"
+    } else {
     foreach device {"devices" "x10"} {
         set row [mk::select cfg.$device name $name]
         if {$row ne ""} {break}
     }
     if {$row eq ""} {return}
-
     set topic [mk::get cfg.$device!$row topic]
-    sendMqtt pub cmnd $topic pwr $cmd
+        set name "pub"
+    }
+    sendMqtt $name cmnd $topic pwr $cmd
 }
 
 # Create command to send
@@ -263,7 +270,7 @@ proc createCmd {cmd} {
     } elseif {[string tolower $cmd] in {"state"}} {
         set state ""
     } else {
-        set state "off"
+        set state $cmd
     }
 
     return $state
@@ -305,7 +312,7 @@ hvPublic netioaction
 proc netioaction {args} {
     global cfg
     
-    lassign $args type name state
+    set state [lassign $args type name]
     if {$type ne $cfg(netioType)} {return ""}
     if {$state eq ""} {return ""}
     sendCmd $name [createCmd $state]
@@ -362,7 +369,7 @@ proc mqttserial {data} {
     global cfg
     
     debug "serial: $data" red
-    set fmt "$cfg(serPre) (\\w+)\\s+(\\w+)$cfg(serPost)"
+    set fmt "$cfg(serPre) (\\w+)\\s+(.+)$cfg(serPost)"
     if {![regexp -nocase $fmt $data match name state]} {
         debug "fail"
         return 0

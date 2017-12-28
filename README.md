@@ -18,8 +18,10 @@ The HomeVisionXL MQTT Plug-in package consists of four files:
 * mqtt-1.0.tm - MQTT library (courtesy of Schelte Bron!),
 * uuid-1.0.5.tm - support library.
 
-All four file should be downloaded into your plugin folder.
-Click the "Clone or Download" button, then select "download zip".
+Click the "Clone or Download" button, then select "Download ZIP".
+Extract the above four files into your plugin folder.
+You can delete README.md and LICENSE.
+
 The plug-in should be enabled via the Plug-in manager.
 
 # Help

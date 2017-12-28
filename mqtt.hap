@@ -1,12 +1,12 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.18 $
-# $Date: 2017/12/22 19:14:47 $
+# $Revision: 1.19 $
+# $Date: 2017/12/28 19:57:21 $
 
 hvImport debug
 
-set version {$Id: hvmqtt.hap,v 1.18 2017/12/22 19:14:47 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.19 2017/12/28 19:57:21 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -39,6 +39,11 @@ package require uuid 1.0.5
 
 # Start MQTT Section
 
+# create local mqtt log command
+mqtt log {str} {
+    debug log:$str green
+} 
+
 proc connect {} {
     global mymqtt cfg
 
@@ -59,7 +64,7 @@ proc disconnect {} {
     debug "BYE!" red
     if {[info exists mymqtt]} {
         subscribe unsub
-        $mymqtt destroy
+        $mymqtt disconnect
     }
 }
 
@@ -166,8 +171,8 @@ proc subrecv {topic msg} {
         cmnd {
             switch $resp {
                 POWER {
-                    set row [mk::select cfg.x10 -regexp topic $match]
-                    if {$row ne ""} {
+                    set r [mk::select cfg.x10 -regexp topic $match]
+                    foreach row $r {
                         lassign [mk::get cfg.x10!$row id] id
                         set devstate [string tolower $msg]
                         if {$devstate eq {}} {
@@ -183,9 +188,9 @@ proc subrecv {topic msg} {
                             catch {hvSendCommand $cmd 2000}
                         } else {
                         }
+                    }
                         cfg_sortlist x10
                     }
-                }
                 default {
                     debug "Unknown command resp: $type, $resp" red
                 }
@@ -244,8 +249,11 @@ proc sendCmd {name cmd} {
 
     if {$name in {pub}} {
         set cmd [lassign $cmd topic]
+        debug "topic: $topic" darkred
+        set topic [string trim $topic {\}\{}]
     } elseif {$name in {sub unsub}} {
         lassign $cmd topic
+        set topic [string trim $topic {\}\{}]
         set cmd "subrecv"
     } else {
     foreach device {"devices" "x10"} {
@@ -369,7 +377,8 @@ proc mqttserial {data} {
     global cfg
     
     debug "serial: $data" red
-    set fmt "$cfg(serPre) (\\w+)\\s+(.+)$cfg(serPost)"
+    set fmt [format {%s (\w+)\s+(.+)%s} $cfg(serPre) $cfg(serPost)]
+    debug $fmt green
     if {![regexp -nocase $fmt $data match name state]} {
         debug "fail"
         return 0
@@ -449,7 +458,7 @@ proc loadconfig {} {
     if {$cfg(clientID) eq ""} {
         binary scan [::uuid::generate] H* uuid
         append cfg(clientID) "HVXL" [string range $uuid end-15 end]
-        debug "clientID:$cfg(clientID)" red
+#        debug "clientID:$cfg(clientID)" red
         # save new clientID for later use
         set saveflag 1
     }
@@ -804,8 +813,12 @@ proc cfg_rtclkdlg {cmd {type ext}} {
 proc cfg_validate {str type var} {
     upvar #0 $var other
     
-    # for now,validate name and topic fields the same
-    if {[cfg_validate_topic $str] && [cfg_validate_topic $other]} {
+    if {$type eq "name"} {
+        set otype "topic"
+    } else {
+        set otype "name"
+    }
+    if {[cfg_validate_$type $str] && [cfg_validate_$otype $other]} {
         .net.usr.f.b1 state !disabled
     } else {
         .net.usr.f.b1 state disabled
@@ -813,8 +826,18 @@ proc cfg_validate {str type var} {
     return 1
 }
 
-proc cfg_validate_topic {str} {
+proc cfg_validate_name {str} {
+    if {[string length $str] >= 1} {
+        if {$str ne {pub sub unsub}} {
+            if {[regexp {^\w+$} $str]} {
+                return 1
+            }
+        }
+    }
+    return 0
+}
 
+proc cfg_validate_topic {str} {
     if {[string length $str] >= 1} {
         if {[cfg_validate_slash $str]} {
             if {[cfg_validate_hash $str]} {
@@ -842,12 +865,11 @@ proc cfg_validate_slash {str} {
 proc cfg_validate_hash {str} {
     set idx [string first {#} $str]
     if {$idx == -1} {return 1}
-    return 0
-    #hash not allowed!! rest is dead code but keep for now
+#    return 0
     set sl [string length $str]
     if {$sl == 1} {return 1}
     if {$sl == $idx+1 && $sl > 2 && [string index $str $idx-1] eq "/"} {return 1}
-#    debug "hash Fail:$str;$idx;" red
+    debug "hash Fail:$str;$idx;" red
     return 0
 }
 
@@ -898,7 +920,7 @@ proc cfg_device_chgdlg {} {
     } 
     cfg_device_adddlg
     .net.usr.f.b1 configure -command [list cfg_device_chg $item]
-    cfg_validate $mqtttopic "" mqttname
+    cfg_validate $mqtttopic topic mqttname
 }
 
 proc cfg_device_chgdlgx10 {} {
@@ -915,7 +937,7 @@ proc cfg_device_chgdlgx10 {} {
 
     cfg_device_adddlgx10
     .net.usr.f.b1 configure -command [list cfg_device_chgx10 $item]
-    cfg_validate $mqtttopic "" mqttname
+    cfg_validate $mqtttopic topic mqttname
 }
 
 proc cfg_device_chg {item} {
@@ -995,12 +1017,12 @@ proc cfg_device_chgx10 {item} {
               -message "Name $mqttname already exists"
             return
         }
-        if {[llength [mk::select cfg.x10 -exact topic $mqtttopic]] && \
-             $row != [mk::select cfg.x10 -exact topic $mqtttopic]} {
-            ttk::messageBox -parent .net.usr -icon error -type ok \
-              -message "Topic $mqtttopic already exists"
-            return
-        }
+#        if {[llength [mk::select cfg.x10 -exact topic $mqtttopic]] && \
+#             $row != [mk::select cfg.x10 -exact topic $mqtttopic]} {
+#            ttk::messageBox -parent .net.usr -icon error -type ok \
+#              -message "Topic $mqtttopic already exists"
+#            return
+#        }
     }
 
     mk::set cfg.x10!$row id $mqttid name $mqttname topic $mqtttopic state $mqttstate level 0 type 1
@@ -1039,10 +1061,10 @@ proc cfg_device_adddlg {} {
     wm withdraw .net.usr
     ttk::label .net.usr.l1 -text "Name:" -anchor w
     ttk::entry .net.usr.e1 -width 20 -textvariable mqttname \
-      -validate all -validatecommand "cfg_validate %P %V mqtttopic"
+      -validate all -validatecommand "cfg_validate %P name mqtttopic"
     ttk::label .net.usr.l2 -text "Topic:" -anchor w
     ttk::entry .net.usr.e2 -width 20 -textvariable mqtttopic \
-      -validate all -validatecommand "cfg_validate %P %V mqttname"
+      -validate all -validatecommand "cfg_validate %P topic mqttname"
     ttk::label .net.usr.l4 -text "Flag/Var:" -anchor w
     ttk::combobox .net.usr.cb -state readonly -width 28
     bind .net.usr.cb <<ComboboxSelected>> [list setflag .net.usr.cb]
@@ -1087,10 +1109,10 @@ proc cfg_device_adddlgx10 {} {
     wm withdraw .net.usr
     ttk::label .net.usr.l1 -text "Name:" -anchor w
     ttk::entry .net.usr.e1 -width 20 -textvariable mqttname \
-      -validate all -validatecommand "cfg_validate %P %V mqtttopic"
+      -validate all -validatecommand "cfg_validate %P name mqtttopic"
     ttk::label .net.usr.l2 -text "Topic:" -anchor w
     ttk::entry .net.usr.e2 -width 20 -textvariable mqtttopic \
-      -validate all -validatecommand "cfg_validate %P %V mqttname"
+      -validate all -validatecommand "cfg_validate %P topic mqttname"
     ttk::label .net.usr.l4 -text "X10:" -anchor w
     ttk::combobox .net.usr.cb -state readonly -width 28
     bind .net.usr.cb <<ComboboxSelected>> [list setx10 .net.usr.cb mqttid]
@@ -1224,7 +1246,7 @@ proc cfg_copy_topic {} {
     global mqttname mqtttopic
 
     set mqttname $mqtttopic
-    cfg_validate $mqtttopic "" mqttname
+    cfg_validate $mqtttopic topic mqttname
 }
 
 proc cfg_copy_x10 {} {
@@ -1234,7 +1256,7 @@ proc cfg_copy_x10 {} {
     
     set mqttname [string map {" " _} $name]
     set mqtttopic <[string map {" " ""} $name]>
-    cfg_validate $mqtttopic "" mqttname
+    cfg_validate $mqtttopic topic mqttname
 }
 
 proc cfg_device_add {} {
@@ -1278,11 +1300,11 @@ proc cfg_device_addx10 {} {
           -message "Topic and Name must be supplied"
         return
     }
-    if {[llength [mk::select cfg.x10 -exact topic $mqtttopic]]} {
-        ttk::messageBox -parent .net.usr -icon error -type ok \
-          -message "Topic $mqtttopic already exists"
-        return
-    }
+#    if {[llength [mk::select cfg.x10 -exact topic $mqtttopic]]} {
+#        ttk::messageBox -parent .net.usr -icon error -type ok \
+#          -message "Topic $mqtttopic already exists"
+#        return
+ #   }
     if {[llength [mk::select cfg.x10 -exact name $mqttname]]} {
         ttk::messageBox -parent .net.usr -icon error -type ok \
           -message "Name $mqttname already exists"

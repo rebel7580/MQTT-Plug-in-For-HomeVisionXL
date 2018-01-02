@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.23 $
-# $Date: 2018/01/01 20:24:47 $
+# $Revision: 1.24 $
+# $Date: 2018/01/02 16:30:58 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.23 2018/01/01 20:24:47 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.24 2018/01/02 16:30:58 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -177,24 +177,23 @@ proc subrecv {topic msg} {
                     set r [mk::select cfg.x10 -regexp topic $match]
                     foreach row $r {
                         lassign [mk::get cfg.x10!$row id model] id model
-                        set devstate [string tolower $msg]
-                        if {$devstate eq {} || $devstate eq "?"} {
-                            # debug "No payload: $topic: $msg" red
                             if {$id > 255} {
                                 set id [expr {$id - 256}]
                                 set type "light"
                         } else {
                                 set type "x10"
                             }
+                        set devstate [string tolower $msg]
+                        if {$devstate eq {} || $devstate eq "?"} {
+                            # debug "No payload: $topic: $msg" red
                             lassign [hvStateString $type $id] newstate newlevel
                             sendMqtt pub stat "<$device>" pwr "$newstate $newlevel"
                         } elseif {$devstate in {on off toggle}} {
-                            action x10 $devstate $id
+                            action $type $devstate $id
                         } else {
                             lassign $devstate st val
                             if {$st eq "on" && [string is integer -strict $val]} {
                                 set val [expr {min(100, $val)}]
-                                set type "x10"
                                 switch $model {
                                     x10 {
                                         set arg [expr {round(16 * $val / 100)}]
@@ -215,7 +214,6 @@ proc subrecv {topic msg} {
                                     light {
                                         set arg [expr {round([hvLightConfigure maxlevel] * $val / 100)}]
                                         set level "level"
-                                        set type "light"
                                     }
                                     default {
                                         set arg $val
@@ -630,7 +628,7 @@ proc cfg_server {} {
     $m add command -label "On" -command {cfg_rtclkdlg On}
     $m add command -label "Toggle" -command {cfg_rtclkdlg Toggle}
     $m add command -label "State" -command {cfg_rtclkdlg State}
-    bind .net.f.f1.ni.f.tv <Button-3> {cfg_rtclk %W %x %y %X %Y}
+    bind .net.f.f1.ni.f.tv <Button-3> {cfg_rtclk ext %W %x %y %X %Y}
     catch {.net.f.f1.ni.f.tv tag configure red -foreground red}
     catch {.net.f.f1.ni.f.tv tag configure black -foreground black}
 
@@ -675,13 +673,13 @@ proc cfg_server {} {
     grid rowconfigure .net.f.f3.ni .net.f.f3.ni.f -weight 1
     bind .net.f.f3.ni.f.tv <<TreeviewSelect>> {cfg_devicesel %W}
     bind .net.f.f3.ni.f.tv <Double-1> {cfg_device_dbl %W %x %y}
-    destroy .rtclkMenux
-    set m [menu .rtclkMenux]
+    destroy .rtclkMenuint
+    set m [menu .rtclkMenuint]
     $m add command -label "Off" -command {cfg_rtclkdlg Off x10}
     $m add command -label "On" -command {cfg_rtclkdlg On x10}
     $m add command -label "Toggle" -command {cfg_rtclkdlg Toggle x10}
     $m add command -label "State" -command {cfg_rtclkdlg State x10}
-    bind .net.f.f3.ni.f.tv <Button-3> {cfg_rtclkx10 %W %x %y %X %Y}
+    bind .net.f.f3.ni.f.tv <Button-3> {cfg_rtclk x10 %W %x %y %X %Y}
     catch {.net.f.f3.ni.f.tv tag configure red -foreground red}
     catch {.net.f.f3.ni.f.tv tag configure black -foreground black}
 
@@ -860,21 +858,16 @@ proc cfg_device_dbl {w x y} {
     }
 }
 
-# put up ext device right-click menu
-proc cfg_rtclk {w x y X Y} {
+# put up device right-click menu
+proc cfg_rtclk {type w x y X Y} {
     set item [$w identify item $x $y]
     if {$item ne ""} {
         $w selection set $item
+        if {$type eq "ext"} {
         tk_popup .rtclkMenu $X $Y
+        } else {
+            tk_popup .rtclkMenuint $X $Y
     }
-}
-
-# put up x10 right-click menu
-proc cfg_rtclkx10 {w x y X Y} {
-    set item [$w identify item $x $y]
-    if {$item ne ""} {
-        $w selection set $item
-        tk_popup .rtclkMenux $X $Y
     }
 }
 
@@ -945,7 +938,8 @@ proc cfg_validate_slash {str} {
 proc cfg_validate_hash {str} {
     set idx [string first {#} $str]
     if {$idx == -1} {return 1}
-#    return 0
+    return 0
+    # hash not allow, rest is dead code for now
     set sl [string length $str]
     if {$sl == 1} {return 1}
     if {$sl == $idx+1 && $sl > 2 && [string index $str $idx-1] eq "/"} {return 1}
@@ -956,6 +950,8 @@ proc cfg_validate_hash {str} {
 proc cfg_validate_plus {str} {
     set idx [regexp -all -inline -indices {\+} $str]
     if {$idx eq ""} {return 1}
+    return 0
+    # + not allow, rest is dead code for now
     set sl [string length $str]
     set pass 1
     foreach i $idx {
@@ -1461,20 +1457,18 @@ proc cfg_device_del {type} {
         set win .net.f.f1.ni.f.tv
         set type "devices"
     }
-    set list [$win selection]
-    foreach n $list {
-        set topic [lindex [$win item $n -values] 1]
-        foreach row [lreverse [mk::select cfg.$type -exact topic $topic]] {
-            mk::row delete cfg.$type!$row
-        }
-    }
-    $win delete $list
+    set name [$win set [$win selection] name]
+    set row [mk::select cfg.$type -exact name $name]
+    lassign [mk::get cfg.x10!$row topic] topic
     if {$type eq "x10"} {
         sendMqtt unsub cmnd $topic pwr subrecv
     } else {
         sendMqtt unsub tele $topic LWT subrecv
         sendMqtt unsub stat $topic pwr subrecv
     }
+    mk::row delete cfg.$type!$row
+
+    $win delete [$win selection]
 }
 
 #! Process a flag when selected for a device

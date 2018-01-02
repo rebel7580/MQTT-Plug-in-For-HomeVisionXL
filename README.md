@@ -37,5 +37,5 @@ The plug-in should be enabled via the Plug-in manager.
 
 # Help
 
-Help is available through the plug-in. Also, a version of the help file can be found in this Project's [Wiki page](https://github.com/rebel7580/MQTT-Plug-in-For-HomeVisionXL/wiki).
+Help is available through the plug-in. Also, a version of the help file can be found in this Project's [Wiki page](https://github.com/rebel7580/MQTT-Plug-in-For-HomeVisionXL/wiki/Help).
 The help file is very detailed. Please read it throughly to properly set up your devices.

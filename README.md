@@ -1,4 +1,6 @@
-**This is Beta Software. Please report issues via the homevision users group**
+**This is Beta Software. Please report issues via the homevision users group
+
+Custom light control is a (doesn't) work-in-profress!**
 
 # Overview
 

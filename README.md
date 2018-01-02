@@ -4,8 +4,19 @@
 
 The MQTT Client Plug-in provides an client interface to MQTT for HomeVision. The MQTT interface has has three distinct functions:
 
-* "External" non-X10 MQTT devices can be controlled and status can be received from them. Actions such as setting Flags or Variables and running macros can be taken based on that status. The plug-in PUBLISHES command topics to these devices and SUBSCRIBES to status topics from these devices.
-* X-10 devices defined in HomeVision can be controlled by external entities via MQTT. The plug-in PUBLISHES status topics from these devices and SUBSCRIBES to command topics to these devices.
+* For "External" MQTT-enabled devices (e.g., Sonoff switches with Tasmota SW),
+the MQTT Plug-in acts as an MQTT controller.
+The plug-in PUBLISHES <i>command</i> topics to these devices
+to control them
+and SUBSCRIBES to <i>status</i> topics from these devices to track state changes.
+Actions such as setting Flags or Variables and running macros can be taken based on that status.
+* For "Internal" X-10 and Custom Light devices defined in HomeVision,
+the MQTT Plug-in acts as a "proxy" for them, essentially making them appear to be MQTT-enabled.
+For each selected device, the plug-in 
+SUBSCRIBES to a <i>command</i> topic to it
+so it can be controlled
+and
+PUBLISHES a <i>status</i> topic from it when it changes state.
 * *Any* arbitrary generic MQTT message can be sent from your schedule via serial commands or from NetIO, independent of any configured devices.
 
 The client plug-in is designed to work easily with [Tasmota based devices](https://github.com/arendst/Sonoff-Tasmota), using a similar basic topic and LWT structure. Other devices that follow different topic structures likely can be accommodated as well.
@@ -26,5 +37,5 @@ The plug-in should be enabled via the Plug-in manager.
 
 # Help
 
-Help is available through the plug-in. Also, a version of the help file can be found in this Project's [Wiki page](https://github.com/rebel7580/MQTT-Plug-in-For-HomeVisionXL/wiki).
+Help is available through the plug-in. Also, a version of the help file can be found in this Project's [Wiki page](https://github.com/rebel7580/MQTT-Plug-in-For-HomeVisionXL/wiki/Help).
 The help file is very detailed. Please read it throughly to properly set up your devices.

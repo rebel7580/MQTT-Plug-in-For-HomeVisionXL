@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.24 $
-# $Date: 2018/01/02 16:30:58 $
+# $Revision: 1.25 $
+# $Date: 2018/01/03 03:00:39 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.24 2018/01/02 16:30:58 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.25 2018/01/03 03:00:39 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -41,6 +41,11 @@ set x10types {
 	ext	"X-10 Lamp Module with Direct Level Control"
 	pcs	"Powerline Control Systems (PCS) Lamp Module"
     light "Custom Lights"
+}
+
+set updtfp  {
+    x10  0
+    light 0
 }
 
 package require mqtt 1.0
@@ -107,7 +112,7 @@ proc subrecv {topic msg} {
                     debug "No payload: $topic: $msg" red
                 } elseif {$devstate eq "on"} {
                     mk::set cfg.devices!$row state "On" status 0
-                            if {$id ne "" && $id != 512} {
+                            if {$id ne "" && $id < 512} {
                                 if {$id > 255} {
                                     set id [expr {$id - 256}]
                                     action var set $id 1
@@ -121,7 +126,7 @@ proc subrecv {topic msg} {
                     }
                 } elseif {$devstate eq "off"} {
                     mk::set cfg.devices!$row state "Off" status 0
-                            if {$id ne "" && $id != 512} {
+                            if {$id ne "" && $id < 512} {
                                 if {$id > 255} {
                                     set id [expr {$id - 256}]
                                     action var set $id 0
@@ -137,7 +142,7 @@ proc subrecv {topic msg} {
                           || [string is double $devstate]} {
                     set devstate [expr {0xff & int($devstate)}]
                     mk::set cfg.devices!$row state $devstate status 0
-                            if {$id ne "" && $id != 512} {
+                            if {$id ne "" && $id < 512} {
                                 if {$id > 255} {
                                     set id [expr {$id - 256}]
                                     action var set $id $devstate
@@ -174,6 +179,7 @@ proc subrecv {topic msg} {
         } $cfg(cmndPrefix) {
             switch $resp \
                 $cfg(pwrPostfix) {
+                    set devstate [string tolower $msg]
                     set r [mk::select cfg.x10 -regexp topic $match]
                     foreach row $r {
                         lassign [mk::get cfg.x10!$row id model] id model
@@ -183,7 +189,6 @@ proc subrecv {topic msg} {
                         } else {
                                 set type "x10"
                             }
-                        set devstate [string tolower $msg]
                         if {$devstate eq {} || $devstate eq "?"} {
                             # debug "No payload: $topic: $msg" red
                             lassign [hvStateString $type $id] newstate newlevel
@@ -236,36 +241,25 @@ proc subrecv {topic msg} {
 
 }
 
-proc x10update {type {publish 1}} {
-    global mymqtt
-    debug "got x10 update"
+proc devupdate {type {publish 1}} {
+    global mymqtt updtfp
+    debug "got $type update"
     set refresh 0
-    mk::loop row cfg.$type {
-        lassign [mk::get $row id name topic state level] id name topic state level
-        lassign [hvStateString x10 $id] newstate newlevel
-        debug "$id -> $topic!: $state->$newstate, $level->$newlevel"
-        if {$newstate != $state || $newlevel != $level} {
-            mk::set $row state $newstate level $newlevel
-            if {$publish} {
-                set cmd "$newstate $newlevel"
-                sendMqtt pub stat $topic pwr $cmd
-            }
-            set refresh 1
+    if {![dict get $updtfp $type]} {
+        # if first update, this was forced update;
+        #   set flag and don't publish
+        dict set updtfp $type 1
+        set publish 0
         }
-    }
-    if {$refresh} {cfg_sortlist x10}
-}
-proc lightupdate {type {publish 1}} {
-    global mymqtt
-    debug "got light update"
-    set refresh 0
     mk::loop row cfg.x10 {
         lassign [mk::get $row id name topic state level model] id name topic state level model
-        if {$id > 255} {
+        
+        if {$id >= 512} {continue}
+        if {$id > 255 && $type eq "light"} {
             set id [expr {$id - 256}]
-            set type "light"
+        } elseif {$id < 256 && $type eq "x10"} {
         } else {
-            continue
+            continue;
         }
         lassign [hvStateString $type $id] newstate newlevel
         debug "$id -> $topic!: $state->$newstate, $level->$newlevel"
@@ -393,7 +387,8 @@ proc netioaction {args} {
 # Note: For external devices,
 #       returns state of the flag or variable value associated with the device,
 #       not the actual current state.
-#       For X10, returns empty string. Use standard x10 Netio gets instead.
+#       For X10/Custom Light, returns On/Off. 
+#         Use standard x10 Netio gets for better control.
 hvPublic netio
 proc netio {args} {
     global cfg
@@ -409,7 +404,7 @@ proc netio {args} {
 
     if {$device eq "devices"} {
     set flag [mk::get cfg.devices!$row flag]
-        if {$flag == 512 || $flag eq ""} {return ""}
+        if {$flag >= 512 || $flag eq ""} {return ""}
     if {$flag > 255} {
         set flag [expr {$flag - 256}]
         return [hvObjectState var $flag]
@@ -418,8 +413,10 @@ proc netio {args} {
     }
     } else {
         set id [mk::get cfg.x10!$row id]
-        if {$id == 256 || $id eq ""} {
-            return ""
+        if {$id >= 512 || $id eq ""} {return ""}
+        if {$id > 255} {
+            set id [expr {$id - 256}]
+            return [lindex [hvStateString light $id] 0]
         } else {
             return [lindex [hvStateString x10 $id] 0]
         }
@@ -1640,5 +1637,9 @@ subscribe
 
 hvTrigger $cfg(serPre) [list mqttserial]
 hvEventHook exit disconnect
-hvEventHook x10update {x10update x10}
-hvEventHook lightupdate {lightupdate}
+
+hvEventHook x10update {devupdate x10}
+hvEventHook lightupdate {devupdate light}
+#force updates
+action x10 update
+action light update

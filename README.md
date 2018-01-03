@@ -1,5 +1,7 @@
 **This is Beta Software. Please report issues via the homevision users group**
 
+**Custom light control is a (doesn't) work-in-progress!**
+
 # Overview
 
 The MQTT Client Plug-in provides an client interface to MQTT for HomeVision. The MQTT interface has has three distinct functions:

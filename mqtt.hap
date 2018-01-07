@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.25 $
-# $Date: 2018/01/03 03:00:39 $
+# $Revision: 1.27 $
+# $Date: 2018/01/07 19:41:30 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.25 2018/01/03 03:00:39 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.27 2018/01/07 19:41:30 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -33,6 +33,8 @@ array set cfg {
     pwrPostfix "POWER"
     rstPostfix "RESULT"
     LWTPostfix "LWT"
+    publishQOS 1
+    subscribeQOS 2
 }
 
 set x10types {
@@ -345,14 +347,14 @@ proc sendMqtt {action pre topic post cmd} {
     regsub {>$} $topic $npost topic
     switch $action {
         pub {
-            if {[catch {$mymqtt publish $topic $cmd 1} rc]} {
+            if {[catch {$mymqtt publish $topic $cmd $cfg(publishQOS)} rc]} {
                 debug "Publish failed: $topic, $cmd: $rc" red
             } else {
             debug "Published $topic, $cmd!"
         }
         }
         sub {
-            $mymqtt subscribe $topic $cmd
+            $mymqtt subscribe $topic $cmd $cfg(subscribeQOS)
             debug "Subscribed to $topic!"
         }
         unsub {
@@ -692,6 +694,15 @@ proc cfg_server {} {
     # Settings Tab
     ttk::frame .net.f.f2
 
+    ttk::label .net.f.f2.l12 -text "MQTT Broker web/IP Address:" -anchor w
+    ttk::entry .net.f.f2.e12 -width 25 -justify center -textvariable cfg(broker)
+    ttk::label .net.f.f2.l13 -text "MQTT Broker Port:" -anchor w
+    ttk::entry .net.f.f2.e13 -width 6 -justify center -textvariable cfg(brokerPort)
+    ttk::label .net.f.f2.l22 -text "Publish QOS:" -anchor w
+    ttk::spinbox .net.f.f2.e22 -width 3 -justify center -values {0 1 2} -textvariable cfg(publishQOS)
+    ttk::label .net.f.f2.l23 -text "Subscribe QOS:" -anchor w
+    ttk::spinbox .net.f.f2.e23 -width 3 -justify center -values {0 1 2} -textvariable cfg(subscribeQOS)
+ 
     ttk::label .net.f.f2.l9 -text "Netio string:" -anchor w
     ttk::entry .net.f.f2.e9 -width 10 -justify center -textvariable cfg(netioType)
     ttk::label .net.f.f2.l10 -text "Serial string prefix string:" -anchor w
@@ -709,10 +720,6 @@ proc cfg_server {} {
     ttk::label .net.f.f2.l21 -text "LWT Postfix (>):" -anchor w
     ttk::entry .net.f.f2.e21 -width 10 -justify center -textvariable cfg(LWTPostfix)
 
-    ttk::label .net.f.f2.l12 -text "MQTT Broker web/IP Address:" -anchor w
-    ttk::entry .net.f.f2.e12 -width 25 -justify center -textvariable cfg(broker)
-    ttk::label .net.f.f2.l13 -text "MQTT Broker Port:" -anchor w
-    ttk::entry .net.f.f2.e13 -width 10 -justify center -textvariable cfg(brokerPort)
     ttk::separator .net.f.f2.sep
     ttk::checkbutton .net.f.f2.c14 -text "Use Username/Password" -variable cfg(userpass) -command cfg_userpass
     ttk::label .net.f.f2.l15 -text "Username:" -anchor w
@@ -735,6 +742,10 @@ proc cfg_server {} {
     grid configure .net.f.f2.l12     -sticky nes -padx 3
     grid .net.f.f2.l13 .net.f.f2.e13 -sticky nws -padx 3
     grid configure .net.f.f2.l13     -sticky nes -padx 3
+    grid .net.f.f2.l22 .net.f.f2.e22 -sticky nws -padx 3
+    grid configure .net.f.f2.l22     -sticky nes -padx 3
+    grid .net.f.f2.l23 .net.f.f2.e23 -sticky nws -padx 3
+    grid configure .net.f.f2.l23     -sticky nes -padx 3
 
     grid x .net.f.f2.c14  -sticky nws -padx 3    
     grid .net.f.f2.l15 .net.f.f2.e15 -sticky nws -padx 3

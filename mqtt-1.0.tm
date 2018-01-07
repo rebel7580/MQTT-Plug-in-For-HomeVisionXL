@@ -255,6 +255,7 @@ oo::class create mqtt {
 	dict set connect username [my configure -username]
 	if {[dict get $connect username] eq ""} {
 	    dict unset connect username
+	} else {
 	    dict set connect password [my configure -password]
 	    if {[dict get $connect password] eq ""} {
 		dict unset connect password
@@ -811,6 +812,7 @@ oo::class create mqtt {
 		if {$qos >= 0 && ![string match $statustopic/* $pat]} {
 		    set msg [dict create topics [dict create $pat $qos]]
 		    lappend list [list SUBSCRIBE $msg]
+		    dict set subscriptions $pat ack {}
 		}
 	    }
 	}

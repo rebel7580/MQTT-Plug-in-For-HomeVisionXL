@@ -25,11 +25,12 @@ The client plug-in is designed to work easily with [Tasmota based devices](https
 
 # Installing
 
-The HomeVisionXL MQTT Plug-in package consists of four files: 
+The HomeVisionXL MQTT Plug-in package consists of the following files: 
 * mqtt.hap - the plug-in itself, 
 * mqtt.hlp - the help file,
 * mqtt-1.0.tm - MQTT library (courtesy of Schelte Bron!),
 * uuid-1.0.5.tm - support library.
+* md5-2.0.4.tm - support library (required by uuid-1.0.5.tm).
 
 Click the "Clone or Download" button, then select "Download ZIP".
 Extract the above four files into your plugin folder.

@@ -12,7 +12,7 @@ The plug-in PUBLISHES <i>command</i> topics to these devices
 to control them
 and SUBSCRIBES to <i>status</i> topics from these devices to track state changes.
 Actions such as setting Flags or Variables and running macros can be taken based on that status.
-* For "Internal" X-10 and Custom Light devices defined in HomeVision,
+* For "Internal" objects defined in HomeVision,
 the MQTT Plug-in acts as a "proxy" for them, essentially making them appear to be MQTT-enabled.
 For each selected device, the plug-in 
 SUBSCRIBES to a <i>command</i> topic to it

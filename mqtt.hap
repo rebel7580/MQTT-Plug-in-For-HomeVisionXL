@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.30 $
-# $Date: 2018/01/12 03:42:44 $
+# $Revision: 1.31 $
+# $Date: 2018/01/12 04:05:14 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.30 2018/01/12 03:42:44 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.31 2018/01/12 04:05:14 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -760,7 +760,7 @@ proc cfg_server {} {
     grid columnconfigure .net.f.f3 1 -weight 1
     grid .net.f.f3 -sticky news  -padx 5 -pady 5
  
-    .net.f add .net.f.f3 -text "Int Devices" -underline 0
+    .net.f add .net.f.f3 -text "Int Objects" -underline 0
 
     # Settings Tab
     ttk::frame .net.f.f2
@@ -1331,7 +1331,7 @@ proc cfg_device_adddlgx10 {} {
     global mqttname mqtttopic mqttid mqttobj x10types
 
     ttk::toplevel .net.usr
-    wm title .net.usr "Configure Device"
+    wm title .net.usr "Configure Object"
     wm transient .net.usr .net
     wm withdraw .net.usr
     ttk::label .net.usr.l1 -text "Name:" -anchor w

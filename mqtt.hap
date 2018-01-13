@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.31 $
-# $Date: 2018/01/12 04:05:14 $
+# $Revision: 1.32 $
+# $Date: 2018/01/13 05:16:33 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.31 2018/01/12 04:05:14 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.32 2018/01/13 05:16:33 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -40,6 +40,7 @@ array set cfg {
     varEnable  0
     flagEnable 0
     hvacEnable 0
+    listWidths {0 0}
 }
 
 set x10types {
@@ -667,9 +668,12 @@ proc cfg_server {} {
     grid .net.f.f1.ni.f.tv .net.f.f1.ni.f.vs -sticky news
     grid columnconfigure .net.f.f1.ni.f .net.f.f1.ni.f.tv -weight 1
     grid rowconfigure .net.f.f1.ni.f .net.f.f1.ni.f.tv -weight 1
-    ttk::button .net.f.f1.ni.b1 -text Edit -command cfg_device_chgdlg -state disabled
-    ttk::button .net.f.f1.ni.b2 -text New -command {cfg_device_addnew ext}
-    ttk::button .net.f.f1.ni.b3 -text Delete -command {cfg_device_del ext} -state disabled
+    ttk::button .net.f.f1.ni.b1 -text Edit -command cfg_device_chgdlg -state disabled \
+        -image [imglist quickedit] -compound left
+    ttk::button .net.f.f1.ni.b2 -text New -command {cfg_device_addnew ext} \
+        -image [imglist add] -compound left   
+    ttk::button .net.f.f1.ni.b3 -text Delete -command {cfg_device_del ext} -state disabled \
+        -image [imglist delete] -compound left
     grid .net.f.f1.ni.f - - -padx 4 -pady 4 -sticky wens
     grid .net.f.f1.ni.b1 .net.f.f1.ni.b2 .net.f.f1.ni.b3 -padx 4 -pady 4 -sticky ew
     grid columnconfigure .net.f.f1.ni all -weight 1
@@ -692,6 +696,19 @@ proc cfg_server {} {
     grid rowconfigure .net.f.f1 .net.f.f1.ni  -weight 1
     grid columnconfigure .net.f.f1 1 -weight 1
     grid .net.f.f1 -sticky news  -padx 5 -pady 5
+
+    # Save changes to column widths. Use unmapped dummy widget to
+    #  capture values before the treeview widget itself is destroyed.
+    ttk::label .net.f.f1.ni.f.tv.canary
+    bind .net.f.f1.ni.f.tv.canary <Destroy> bindWidths
+
+    if {[llength [lindex $cfg(listWidths) 0]] == 6} {
+        foreach col {#0 #1 #2 #3 #4 #5} wid [lindex $cfg(listWidths) 0] {
+            debug "$col:$wid" red
+            .net.f.f1.ni.f.tv column $col -width $wid
+        }
+    }
+
 
     .net.f add .net.f.f1 -text "Ext Devices" -underline 0
 
@@ -718,9 +735,12 @@ proc cfg_server {} {
     grid .net.f.f3.ni.f.tv .net.f.f3.ni.f.vs -sticky news
     grid columnconfigure .net.f.f3.ni.f .net.f.f3.ni.f.tv -weight 1
     grid rowconfigure .net.f.f3.ni.f .net.f.f3.ni.f.tv -weight 1
-    ttk::button .net.f.f3.ni.b1 -text Edit -command cfg_device_chgdlgx10 -state disabled
-    ttk::button .net.f.f3.ni.b2 -text New -command {cfg_device_addnew x10}
-    ttk::button .net.f.f3.ni.b3 -text Delete -command {cfg_device_del x10} -state disabled
+    ttk::button .net.f.f3.ni.b1 -text Edit -command cfg_device_chgdlgx10 -state disabled \
+        -image [imglist quickedit] -compound left
+    ttk::button .net.f.f3.ni.b2 -text New -command {cfg_device_addnew x10} \
+        -image [imglist add] -compound left   
+    ttk::button .net.f.f3.ni.b3 -text Delete -command {cfg_device_del x10} -state disabled \
+        -image [imglist delete] -compound left
     grid .net.f.f3.ni.f - - -padx 4 -pady 4 -sticky wens
     grid .net.f.f3.ni.b1 .net.f.f3.ni.b2 .net.f.f3.ni.b3 -padx 4 -pady 4 -sticky ew
     
@@ -760,45 +780,53 @@ proc cfg_server {} {
     grid columnconfigure .net.f.f3 1 -weight 1
     grid .net.f.f3 -sticky news  -padx 5 -pady 5
  
+    if {[llength [lindex $cfg(listWidths) 1]] == 6} {
+        foreach col {#0 #1 #2 #3 #4 #5} wid [lindex $cfg(listWidths) 1] {
+            debug "$col:$wid" darkred
+            .net.f.f3.ni.f.tv column $col -width $wid
+        }
+    }
+    
     .net.f add .net.f.f3 -text "Int Objects" -underline 0
 
     # Settings Tab
     ttk::frame .net.f.f2
-
-    ttk::label .net.f.f2.l12 -text "MQTT Broker web/IP Address:" -anchor w
-    ttk::entry .net.f.f2.e12 -width 25 -justify center -textvariable cfg(broker)
-    bind .net.f <<NotebookTabChanged>> {.net.f.f2.e12 selection clear}
-    ttk::label .net.f.f2.l13 -text "MQTT Broker Port:" -anchor w
-    ttk::entry .net.f.f2.e13 -width 6 -justify center -textvariable cfg(brokerPort)
-    ttk::label .net.f.f2.l22 -text "Publish QOS:" -anchor w
-    ttk::spinbox .net.f.f2.e22 -width 3 -justify center -values {0 1 2} -textvariable cfg(publishQOS)
-    ttk::label .net.f.f2.l23 -text "Subscribe QOS:" -anchor w
-    ttk::spinbox .net.f.f2.e23 -width 3 -justify center -values {0 1 2} -textvariable cfg(subscribeQOS)
- 
-    ttk::label .net.f.f2.l9 -text "Netio string:" -anchor w
-    ttk::entry .net.f.f2.e9 -width 10 -justify center -textvariable cfg(netioType)
-    ttk::label .net.f.f2.l10 -text "Serial string prefix string:" -anchor w
-    ttk::entry .net.f.f2.e10 -width 10 -justify center -textvariable cfg(serPre)
-    ttk::label .net.f.f2.l11 -text "Serial string terminator character(s):" -anchor w
-    ttk::entry .net.f.f2.e11 -width 5 -justify center -textvariable cfg(serPost)
-    ttk::label .net.f.f2.l17 -text "Command Prefix (<):" -anchor w
+    ttk::label .net.f.f2.l17 -text "Command Prefix (<):"  -anchor e
     ttk::entry .net.f.f2.e17 -width 10 -justify center -textvariable cfg(cmndPrefix)
-    ttk::label .net.f.f2.l18 -text "State Prefix (<):" -anchor w
+    ttk::label .net.f.f2.l18 -text "State Prefix (<):" -anchor e
     ttk::entry .net.f.f2.e18 -width 10 -justify center -textvariable cfg(statPrefix)
-    ttk::label .net.f.f2.l19 -text "Tele Prefix (<):" -anchor w
+    ttk::label .net.f.f2.l19 -text "Tele Prefix (<):" -anchor e
     ttk::entry .net.f.f2.e19 -width 10 -justify center -textvariable cfg(telePrefix)
-    ttk::label .net.f.f2.l20 -text "Power Postfix (>):" -anchor w
+    ttk::label .net.f.f2.l20 -text "Power Postfix (>):" -anchor e
     ttk::entry .net.f.f2.e20 -width 10 -justify center -textvariable cfg(pwrPostfix)
-    ttk::label .net.f.f2.l21 -text "LWT Postfix (>):" -anchor w
+    ttk::label .net.f.f2.l21 -text "LWT Postfix (>):" -anchor e
     ttk::entry .net.f.f2.e21 -width 10 -justify center -textvariable cfg(LWTPostfix)
+    ttk::label .net.f.f2.l12 -text "MQTT Broker web/IP Address:" -anchor e
+    ttk::entry .net.f.f2.e12 -width 25 -justify center -textvariable cfg(broker)
+    
+    bind .net.f <<NotebookTabChanged>> {.net.f.f2.e17 selection clear; focus .net.f.f2.e12; .net.f.f2.e12 icursor end}
+    
+    ttk::label .net.f.f2.l13 -text "MQTT Broker Port:" -anchor e
+    ttk::entry .net.f.f2.e13 -width 6 -justify center -textvariable cfg(brokerPort)
+    ttk::label .net.f.f2.l22 -text "Publish QOS:" -anchor e
+    ttk::spinbox .net.f.f2.e22 -width 3 -justify center -values {0 1 2} -textvariable cfg(publishQOS)
+    ttk::label .net.f.f2.l23 -text "Subscribe QOS:" -anchor e
+    ttk::spinbox .net.f.f2.e23 -width 3 -justify center -values {0 1 2} -textvariable cfg(subscribeQOS)
 
-    ttk::separator .net.f.f2.sep
     ttk::checkbutton .net.f.f2.c14 -text "Use Username/Password" -variable cfg(userpass) -command cfg_userpass
-    ttk::label .net.f.f2.l15 -text "Username:" -anchor w
+    ttk::label .net.f.f2.l15 -text "Username:" -anchor e
     ttk::entry .net.f.f2.e15 -width 25 -justify center -textvariable cfg(username)
-    ttk::label .net.f.f2.l16 -text "Password:" -anchor w
+    ttk::label .net.f.f2.l16 -text "Password:" -anchor e
     ttk::entry .net.f.f2.e16 -width 25 -justify center -textvariable cfg(password) -show *
 
+    ttk::separator .net.f.f2.sep
+    
+    ttk::label .net.f.f2.l9 -text "Netio string:" -anchor e
+    ttk::entry .net.f.f2.e9 -width 10 -justify center -textvariable cfg(netioType)
+    ttk::label .net.f.f2.l10 -text "Serial string prefix string:" -anchor e
+    ttk::entry .net.f.f2.e10 -width 10 -justify center -textvariable cfg(serPre)
+    ttk::label .net.f.f2.l11 -text "Serial string terminator character(s):" -anchor e
+    ttk::entry .net.f.f2.e11 -width 5 -justify center -textvariable cfg(serPost)
 
     grid .net.f.f2.l17 .net.f.f2.e17 -sticky nws -padx 3
     grid configure .net.f.f2.l17     -sticky nes -padx 3
@@ -835,6 +863,10 @@ proc cfg_server {} {
     grid .net.f.f2.l11 .net.f.f2.e11 -sticky nws -padx 3
     grid configure .net.f.f2.l11     -sticky nes -padx 3
 
+    grid rowconfigure .net.f.f2 all -weight 1
+    grid columnconfigure .net.f.f2 all -weight 1
+    grid .net.f.f2 -sticky news  -padx 5 -pady 5
+
     cfg_userpass    
     
      .net.f add .net.f.f2 -text "Settings" -underline 0
@@ -848,13 +880,21 @@ proc cfg_server {} {
     grid rowconfigure .net .net.f -weight 1
     grid rowconfigure .net .net.b3 -weight 0
     
-
     wm protocol .net WM_DELETE_WINDOW {.net.b3 invoke}
 
     if {[regexp {\+-?[0-9]+\+-?[0-9]+} $cfg(geometry)]} {
         wm geometry .net $cfg(geometry)
     }
     wm deiconify .net
+}
+
+proc bindWidths {} {
+    global cfg
+    
+    lset cfg(listWidths) 0 [lmap col {#0 #1 #2 #3 #4 #5} {.net.f.f1.ni.f.tv column $col -width}]
+    lset cfg(listWidths) 1 [lmap col {#0 #1 #2 #3 #4 #5} {.net.f.f3.ni.f.tv column $col -width}]
+    debug "tv col widths:$cfg(listWidths)" darkred
+
 }
 
 #! Get images for Configuration dialog
@@ -1304,11 +1344,14 @@ proc cfg_device_adddlg {} {
     ttk::combobox .net.usr.cb6 -state readonly -width 28
     bind .net.usr.cb6 <<ComboboxSelected>> [list setmacro .net.usr.cb6 mqttmacro_off]
     createmacrolist .net.usr.cb6 mqttmacro_off
-    ttk::button .net.usr.b3 -text "Copy Topic to Name"  -command cfg_copy_topic
+    ttk::button .net.usr.b3 -text "Copy Topic to Name"  -command cfg_copy_topic \
+        -image [imglist copy] -compound left
     ttk::separator .net.usr.sep
     ttk::frame .net.usr.f
-    ttk::button .net.usr.f.b1 -text OK -width 6 -command cfg_device_add -state disabled
-    ttk::button .net.usr.f.b2 -text Cancel -width 6 -command {destroy .net.usr}
+    ttk::button .net.usr.f.b1 -text OK -width 6 -command cfg_device_add -state disabled \
+        -image [imglist ok] -compound left
+    ttk::button .net.usr.f.b2 -text Cancel -width 6 -command {destroy .net.usr} \
+        -image [imglist cancel] -compound left
     grid .net.usr.f.b1 .net.usr.f.b2 -padx 20 -pady 4
     grid anchor .net.usr.f center
     grid .net.usr.l2 .net.usr.e2 -padx 4 -pady 1 -sticky we
@@ -1347,11 +1390,14 @@ proc cfg_device_adddlgx10 {} {
     ttk::combobox .net.usr.cb -state readonly -width 28
     bind .net.usr.cb <<ComboboxSelected>> [list setx10 .net.usr.cb mqttid mqttobj]
     createx10list .net.usr.cb
-    ttk::button .net.usr.b3 -text "Copy Object to Topic, Name"  -command cfg_copy_x10
+    ttk::button .net.usr.b3 -text "Copy Object to Topic, Name"  -command cfg_copy_x10 \
+        -image [imglist copy] -compound left
     ttk::separator .net.usr.sep
     ttk::frame .net.usr.f
-    ttk::button .net.usr.f.b1 -text OK -width 6 -command cfg_device_addx10 -state disabled
-    ttk::button .net.usr.f.b2 -text Cancel -width 6 -command {destroy .net.usr}
+    ttk::button .net.usr.f.b1 -text OK -width 6 -command cfg_device_addx10 -state disabled \
+        -image [imglist ok] -compound left    
+    ttk::button .net.usr.f.b2 -text Cancel -width 6 -command {destroy .net.usr} \
+        -image [imglist cancel] -compound left    
     set row [mk::select cfg.x10 id $mqttid]
     if {![catch {mk::get cfg.x10!$row model} model] && $model ne ""} {
         .net.usr.c3 set [dict get $x10types [mk::get cfg.x10!$row model]]
@@ -1372,7 +1418,7 @@ proc cfg_device_adddlgx10 {} {
     bind .net.usr <F1> {hvHelp users}
     center .net.usr .net
     grab .net.usr
-    focus .net.usr.e2
+    focus .net.usr.cb
 }
 
 # set sort orders from clicked headers
@@ -1589,7 +1635,7 @@ proc cfg_device_del {type} {
     }
     set name [$win set [$win selection] name]
     set row [mk::select cfg.$type -exact name $name]
-    lassign [mk::get cfg.x10!$row topic] topic
+    lassign [mk::get cfg.$type!$row topic] topic
     if {$type eq "x10"} {
         sendMqtt unsub cmnd $topic pwr subrecv
     } else {

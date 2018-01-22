@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.32 $
-# $Date: 2018/01/13 05:16:33 $
+# $Revision: 1.36 $
+# $Date: 2018/01/22 04:38:39 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.32 2018/01/13 05:16:33 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.36 2018/01/22 04:38:39 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -40,10 +40,15 @@ array set cfg {
     varEnable  0
     flagEnable 0
     hvacEnable 0
-    listWidths {0 0}
+    tempEnable 0
+    analogEnable 0
+    inputEnable  0
+    outputEnable 0
+    listWidths  {0 0 0}
 }
 
 set x10types {
+    none  ""
 	x10	"Standard X-10 Lamp Module"
 	app	"Standard X-10 Applicance Module"
 	ext	"X-10 Lamp Module with Direct Level Control"
@@ -52,11 +57,15 @@ set x10types {
 }
 
 set objtypes {
-    x10   {order 1 on on off off toggle toggle state state}
-    light {order 2 on on off off toggle toggle state state}
-    flag  {order 3 on set off clear toggle toggle state state set set clear clear}
-    var   {order 4 on on off off toggle toggle state state set set}
-    hvac  {order 5 on "" off "" toggle "" state state}
+    x10    {order 1 on on   off off   toggle toggle state state set on   clear off   setto on   }
+    light  {order 2 on on   off off   toggle toggle state state set on   clear off   setto on   }
+    flag   {order 3 on set  off clear toggle toggle state state set set  clear clear setto ""   }
+    var    {order 4 on on   off off   toggle toggle state state set set  clear ""    setto set  }
+    hvac   {order 5 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""   }
+    temp   {order 6 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""   }
+    analog {order 7 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""   }
+    input  {order 8 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""     high ""   low low}
+    output {order 9 on high off low   toggle toggle state state set high clear low   setto ""     high high low low}
 }
 
 set updtfp  {
@@ -65,6 +74,10 @@ set updtfp  {
     flag 0
     var 0
     hvac 0
+    temp 0
+    analog  0
+    input   0
+    output  0
 }
 
 package require mqtt 1.0
@@ -101,9 +114,55 @@ proc disconnect {} {
     }
 }
 
+proc hvrecv {topic resp msg} {
+    global objtypes
+
+    debug "HV Recv'd: $topic, $resp, $msg" red
+    if {([string tolower $resp] ne "power") || $msg ni {"" ?}} {
+        return
+    }
+    set ptopic [split $topic /]
+    if {[llength $ptopic] == 1} {
+        set objs [dict keys $objtypes]
+    } elseif {[llength $ptopic] == 2} {
+        set objs [lindex $ptopic 1]
+        if {$objs ni [dict keys $objtypes]} {
+            return
+        }
+    }
+    set match [join $objs |]
+    debug "objs:$objs;match:$match;" red
+    
+    set r [mk::select cfg.x10 -regexp object $match -sort object]
+    sendStatus $r
+}
+
+proc sendStatus {r} {
+
+    foreach row $r {
+        lassign [mk::get cfg.x10!$row id topic object] id topic object 
+        debug "id:$id,topic:$topic,object:$object;" red
+        lassign [hvStateString $object $id] newstate newlevel newfan newtemp newsetp
+        if {$object eq "hvac"} {
+            set cmd "$newstate $newlevel $newfan $newtemp $newsetp"
+        } elseif {$object in {input output}} {
+            set os [hvObjectState $object $id]
+            if {$os ne ""} {
+                set cmd [hvObjectLabel $object $id $os]
+            } else {
+                set cmd "Unknown"
+            }
+        } else {
+            set cmd "$newstate $newlevel"
+        }
+        debug "$id -> $topic!: $newstate, $newlevel;cmd: $cmd" blue
+        sendMqtt pub stat $topic pwr $cmd
+    }  
+}
+
 # Read MQTT response
 proc subrecv {topic msg} {
-    global mymqtt cfg objtypes
+    global cfg objtypes
 
     set f [string first / $topic]
     set type [string range $topic 0 $f-1]
@@ -118,62 +177,75 @@ proc subrecv {topic msg} {
                 $cfg(rstPostfix) - $cfg(pwrPostfix) {
                     if {$resp eq $cfg(rstPostfix)} {
             set fmt "{\"POWER\":\"(\\w+)\"}"
-            if {![regexp $fmt $msg --> devstate]} {return}
-                        debug "$resp: devstate:$devstate;" red
-                        set devstate [string tolower $devstate]
+                        if {![regexp $fmt $msg --> payload]} {return}
+                        set payload [string tolower $payload]
                     } else {
-                        set devstate [string tolower $msg]
+                        set payload [string tolower $msg]
                         }
+                    debug "$resp: payload:$payload;" red
                     set row [mk::select cfg.devices -regexp topic $match]
             if {$row ne ""} {
-                        lassign [mk::get cfg.devices!$row flag macro_on macro_off] id macro_on macro_off
-                if {$devstate eq {}} {
+                        lassign [mk::get cfg.devices!$row flag macro_on macro_off varflag] id macro_on macro_off varflag
+                        if {$payload eq {}} {
                     debug "No payload: $topic: $msg" red
-                } elseif {$devstate eq "on"} {
+                        } elseif {$payload eq "on"} {
                     mk::set cfg.devices!$row state "On" status 0
                             if {$id ne "" && $id < 512} {
-                                if {$id > 255} {
+                                if {$id < 256} {
+                                    action flag set $id
+                                } elseif {$varflag} {
                                     set id [expr {$id - 256}]
                                     action var set $id 1
                                     action var update
-                        } else {
-                                    action flag set $id
                      }
                     }
-                    if {$macro_on ne "" && $macro_on < 256} {
+                            if {$macro_on ne "" && $macro_on < 256 && $varflag} {
                                 action macro run $macro_on
                     }
-                } elseif {$devstate eq "off"} {
+                        } elseif {$payload eq "off"} {
                     mk::set cfg.devices!$row state "Off" status 0
                             if {$id ne "" && $id < 512} {
-                                if {$id > 255} {
+                                if {$id < 256} {
+                                    action flag clear $id
+                                } elseif {$varflag} {
                                     set id [expr {$id - 256}]
                                     action var set $id 0
                                     action var update
-                        } else {
-                                    action flag clear $id
                     }
                     }
-                    if {$macro_off ne "" && $macro_off < 256} {
+                            if {$macro_off ne "" && $macro_off < 256 && $varflag} {
                                 action macro run $macro_off
                     }
-                } elseif {[string is integer $devstate] \
-                          || [string is double $devstate]} {
-                    set devstate [expr {0xff & int($devstate)}]
-                    mk::set cfg.devices!$row state $devstate status 0
+                        } elseif {[string is integer $payload] \
+                                  || [string is double $payload]} {
+                            set payload [expr {0xff & int($payload)}]
+                            mk::set cfg.devices!$row state $payload status 0
                             if {$id ne "" && $id < 512} {
-                                if {$id > 255} {
-                                    set id [expr {$id - 256}]
-                                    action var set $id $devstate
-                                    action var update
-                                } else {
-                                    if {[expr {0x01 & $devstate}]} {
+                                if {$id < 256} {
+                                    if {[expr {0x01 & $payload}]} {
                                         action flag set $id
                         } else {
                                         action flag clear $id
                                     }
+                                } else {
+                                    set id [expr {$id - 256}]
+                                    action var set $id $payload
+                                    action var update
+                                }
+                            }
+                        } elseif {$payload eq "cycle"} {
+                            mk::set cfg.devices!$row state "Cyc" status 0
+                            if {$id ne "" && $id < 512} {
+                            debug "id:$id;v:$varflag" darkred
+                                if {$id > 255 && !$varflag} {
+                                    set id [expr {$id - 256}]
+                                    action var increment $id
+                                    action var update
                         }
                     }
+                            if {$macro_on ne "" && $macro_on < 256 && !$varflag} {
+                                action macro run $macro_on
+                            }
                         } else {
                             mk::set cfg.devices!$row status 0
                 }
@@ -183,10 +255,10 @@ proc subrecv {topic msg} {
             debug "LWT-$device:$msg" red
                     set row [mk::select cfg.devices -regexp topic $match]
             if {$row ne ""} {
-                set devstate [string tolower $msg]
-                if {$devstate eq "online"} {
+                        set payload [string tolower $msg]
+                        if {$payload eq "online"} {
                     mk::set cfg.devices!$row status 0
-                } elseif {$devstate eq "offline"} {
+                        } elseif {$payload eq "offline"} {
                     mk::set cfg.devices!$row status 1
                         }
                         cfg_sortlist ext
@@ -196,33 +268,31 @@ proc subrecv {topic msg} {
                 }
             
         } $cfg(cmndPrefix) {
+            if {[string first "homevision" [string tolower $device]] != -1} {
+                hvrecv $device $resp $msg
+                return
+            }
             switch $resp \
                 $cfg(pwrPostfix) {
-                    set devstate [string tolower $msg]
+                    set payload [string tolower $msg]
                     set r [mk::select cfg.x10 -regexp topic $match]
                     foreach row $r {
-                        lassign [mk::get cfg.x10!$row id model object state] id model object state
+                        lassign [mk::get cfg.x10!$row id model object] id model object
                         debug "id:$id,model:$model,object:$object;" red
 
-                        if {$devstate eq {} || $devstate eq "?"} {
-                             debug "No payload: $topic: $msg" red
-                            lassign [hvStateString $object $id] newstate newlevel newfan newtemp newsetp
-                                debug "$newstate,$newlevel,$newfan,$newtemp,$newsetp;" red
-                            if {$object eq "hvac"} {
-                                set newlevel "$newlevel $newfan $newtemp $newsetp"
-                            }
-                            debug "$id -> $topic!: $newstate, $newlevel" blue
-                            sendMqtt pub stat "<$device>" pwr "$newstate $newlevel"
-                        } elseif {$devstate in {on off toggle set clear}} {
-                            if {$object eq "hvac"} {
-                                debug "HVAC: $type, $resp, $devstate not supported." red
+                        if {$payload eq {} || $payload eq "?"} {
+                             debug "No payload: $topic:$msg;" red
+                             sendStatus $row
+                        } elseif {$payload in {on off toggle set clear low high}} {
+                            if {[dict get $objtypes $object $payload] eq ""} {
+                                debug "$object: $type, $resp, $payload not supported." red
                             } elseif {$object eq "var"} {
-                                if {$devstate in {on set}} {
+                                if {$payload in {on set}} {
                                     set val 1
-                                } elseif {$devstate in {off clear}} {
+                                } elseif {$payload in {off clear}} {
                                     set val 0
-                                } elseif {$devstate in {toggle}} {
-                                    if {0x01 & $state} {
+                                } elseif {$payload in {toggle}} {
+                                    if {0x01 & [hvStateString $object $id]} {
                                         set val 0
                         } else {
                                         set val 1
@@ -231,11 +301,15 @@ proc subrecv {topic msg} {
                                 action $object set $id $val
                                 action $object update
                             } else {
-                                action $object [dict get $objtypes $object $devstate] $id
+                                action $object [dict get $objtypes $object $payload] $id
                             }
-                        } elseif {$object in {x10 light}} {
-                            lassign $devstate st val
-                            if {$st eq "on" && [string is integer -strict $val]} {
+                        } else {
+                            lassign $payload st val
+                            if {($st eq "on" && \
+                                ([string is integer -strict $val] || [string is double -strict $val])) \
+                             || ([string is integer -strict $st] || [string is double -strict $st])} {
+                                if {$st ne "on"} {set val $st}
+                                if {$object in {x10 light}} {
                                 set val [expr {min(100, $val)}]
                                 switch $model {
                                     x10 {
@@ -265,31 +339,46 @@ proc subrecv {topic msg} {
                     }
                                 action $object {*}[concat $level $id $arg]
                                 action $object update
-                            }
                         } elseif {$object in {var}} {
-                            if {[string is integer $devstate] \
-                                || [string is double $devstate]} {
-                                set devstate [expr {0xff & int($devstate)}]  
-                                action var set $id $devstate
+                                    set val [expr {0xff & int($val)}]  
+                                    action var set $id $val
                                 action var update
+                                } elseif {$object in {flag}} {
+                                    if {[expr {0x01 & $val}]} {
+                                        action flag set $id
+                                    } else {
+                                        action flag clear $id
+                                    }
+                                } elseif {$object in {hvac}} {
+                                    if {$val >= 0 && $val <= 99} {
+                                    action hvac setpoint [expr {$id-1}] $val
+                                }
                 }
             }
                     }
+                    }
                     cfg_sortlist x10
                 } default {
-                    debug "Unknown command resp: $type, $resp" red
+                    debug "Unknown command: $type, $resp" red
         }
-
         } default {
-            debug "Unknown command type: $type" red
+            debug "Unknown prefix: $type" red
         }
-
 }
 
-proc devupdate {type {publish 1}} {
-    global mymqtt updtfp
+proc devupdate {} {
+
+    mk::loop row cfg.devices {
+        lassign [mk::get $row id name topic] id name topic        
+        if {$id >= 512} {continue}
+        sendCmd $name ""
+    }
+}
+
+proc objupdate {type {publish 1}} {
+    global updtfp
+
     debug "got $type update"
-    set refresh 0
     if {![dict get $updtfp $type]} {
         # if first update, this was forced update;
         #   set flag and don't publish
@@ -297,27 +386,48 @@ proc devupdate {type {publish 1}} {
         set publish 0
         }
     mk::loop row cfg.x10 {
+        set refresh 0
         lassign [mk::get $row id name topic state level model object] id name topic state level model object
-        
-        if {$id >= 512} {continue}
+        if {$id >= 256} {continue}
         if {$type ne $object} {continue}
-
-        lassign [hvStateString $type $id] newstate newlevel newfan newtemp newsetp
+        set cmd [hvStateString $type $id]    
         if {$type eq "hvac"} {
-            set newstate $newlevel
-            set newlevel $newtemp
+            lassign [hvObjectState $type $id] newstate newlevel newsetp
+            if {$newstate != $state || $newlevel != $level || $newsetp != $model} {
+                mk::set $row state $newstate level $newlevel model $newsetp
+                set refresh 1
+            }
+        } else {
+            lassign $cmd newstate newlevel
+            if {$type in {var temp}} {
+                set cmd $newstate
+            set newlevel $newstate       
+            set newstate "-"
+        } elseif {$type eq "flag"} {
+                set cmd $newstate
+            set newlevel "-"
+            } elseif {$type in {input output}} {
+                set os [hvObjectState $type $id]
+                if {$os ne ""} {
+                    set newstate [hvObjectLabel $type $id $os]
+                } else {
+                    set newstate "Unknown"
+                }
+                set cmd $newstate
+                set newlevel "-"
         }
-        debug "$id -> $topic!: $state->$newstate, $level->$newlevel"
         if {$newstate != $state || $newlevel != $level} {
             mk::set $row state $newstate level $newlevel
-            if {$publish} {
-                set cmd "$newstate $newlevel"
+                set refresh 1
+            }
+        }
+    debug "$id -> $topic!:$state->$newstate,$level->$newlevel;cmd:$cmd"
+        if {$publish && $refresh} {
                 sendMqtt pub stat $topic pwr $cmd
             }
-            set refresh 1
-        }
     }
-    if {$refresh} {cfg_sortlist x10}
+
+    cfg_sortlist x10
 }
 
 proc subscribe {{type sub}} {
@@ -339,6 +449,7 @@ proc subscribe {{type sub}} {
             sendMqtt $type cmnd $topic pwr subrecv
         }
     }
+    sendMqtt sub cmnd "<homevision/#" "" subrecv
 }
 
 # Send command
@@ -377,7 +488,6 @@ proc createCmd {cmd} {
     } else {
         set state $cmd
     }
-
     return $state
 }
 
@@ -458,7 +568,7 @@ proc netio {args} {
     }
     } else {
         lassign [mk::get cfg.x10!$row id object] id object
-        if {$id >= 512 || $id eq ""} {return ""}
+        if {$id >= 256 || $id eq ""} {return ""}
         return [lindex [hvStateString $object $id] 0]
     }
 }
@@ -512,7 +622,7 @@ proc loadconfig {} {
     }
     # Ext Devices
     mk::view layout cfg.devices {
-        name topic state status flag macro_on macro_off stopic ltopic
+        name topic state status flag macro_on macro_off stopic ltopic varflag
     }
     #Int Devices
     mk::view layout cfg.x10 {
@@ -578,6 +688,22 @@ proc loadconfig {} {
                 }
             }
         }
+        set saveflag 1
+    }
+    if {$cfg(version) < 6} {
+    debug "old version $cfg(version)" red
+        set cfg(version) 6
+        debug "Adding Varflag" red
+        mk::loop row cfg.devices {
+            mk::set $row varflag 1
+        }
+        set saveflag 1
+    }
+    if {$cfg(version) < 7} {
+    debug "old version $cfg(version)" red
+        set cfg(version) 7
+        debug "Addjusting listWidths" red
+        lappend cfg(listWidths) 0
         set saveflag 1
     }
     
@@ -704,7 +830,6 @@ proc cfg_server {} {
 
     if {[llength [lindex $cfg(listWidths) 0]] == 6} {
         foreach col {#0 #1 #2 #3 #4 #5} wid [lindex $cfg(listWidths) 0] {
-            debug "$col:$wid" red
             .net.f.f1.ni.f.tv column $col -width $wid
         }
     }
@@ -749,12 +874,17 @@ proc cfg_server {} {
     
     ttk::labelframe .net.f.f3.ni.fo -text "Object Type List Enable"
     ttk::checkbutton .net.f.f3.ni.fo.c1 -text "X-10" -variable cfg(x10Enable) -command {cfg_objenable x10}
-    ttk::checkbutton .net.f.f3.ni.fo.c2 -text "Custom Light" -variable cfg(lightEnable) -command {cfg_objenable light}
-    ttk::checkbutton .net.f.f3.ni.fo.c3 -text "Flag" -variable cfg(flagEnable) -command {cfg_objenable flag}
-    ttk::checkbutton .net.f.f3.ni.fo.c4 -text "Variable" -variable cfg(varEnable) -command {cfg_objenable var}
+    ttk::checkbutton .net.f.f3.ni.fo.c2 -text "Custom Lights" -variable cfg(lightEnable) -command {cfg_objenable light}
+    ttk::checkbutton .net.f.f3.ni.fo.c3 -text "Flags" -variable cfg(flagEnable) -command {cfg_objenable flag}
+    ttk::checkbutton .net.f.f3.ni.fo.c4 -text "Variables" -variable cfg(varEnable) -command {cfg_objenable var}
     ttk::checkbutton .net.f.f3.ni.fo.c5 -text "HVAC" -variable cfg(hvacEnable) -command {cfg_objenable hvac}
+    ttk::checkbutton .net.f.f3.ni.fo.c6 -text "DTS" -variable cfg(tempEnable) -command {cfg_objenable temp}
+    ttk::checkbutton .net.f.f3.ni.fo.c7 -text "Analog" -variable cfg(analogEnable) -command {cfg_objenable analog}
+    ttk::checkbutton .net.f.f3.ni.fo.c8 -text "Inputs" -variable cfg(inputEnable) -command {cfg_objenable input}
+    ttk::checkbutton .net.f.f3.ni.fo.c9 -text "Outputs" -variable cfg(outputEnable) -command {cfg_objenable output}
 
-    grid .net.f.f3.ni.fo.c1 .net.f.f3.ni.fo.c2 .net.f.f3.ni.fo.c3 .net.f.f3.ni.fo.c4 .net.f.f3.ni.fo.c5 -sticky news -padx 3
+    grid .net.f.f3.ni.fo.c1 .net.f.f3.ni.fo.c3 .net.f.f3.ni.fo.c4 .net.f.f3.ni.fo.c8 .net.f.f3.ni.fo.c9  -sticky news -padx 3
+    grid .net.f.f3.ni.fo.c2 .net.f.f3.ni.fo.c5 .net.f.f3.ni.fo.c6 .net.f.f3.ni.fo.c7 .net.f.f3.ni.fo.c8 .net.f.f3.ni.fo.c9  -sticky news -padx 3
     grid .net.f.f3.ni.fo -columnspan 3 -sticky ew -padx 5 -pady 5
 
     grid columnconfigure .net.f.f3.ni.fo all -weight 1
@@ -769,6 +899,7 @@ proc cfg_server {} {
     $m add command -label "On" -command {cfg_rtclkdlg On x10}
     $m add command -label "Toggle" -command {cfg_rtclkdlg Toggle x10}
     $m add command -label "State" -command {cfg_rtclkdlg State x10}
+    $m add command -label "Set To" -command {cfg_rtclkdlg setto x10}
     bind .net.f.f3.ni.f.tv <Button-3> {cfg_rtclk x10 %W %x %y %X %Y}
     catch {.net.f.f3.ni.f.tv tag configure red -foreground red}
     catch {.net.f.f3.ni.f.tv tag configure black -foreground black}
@@ -782,7 +913,6 @@ proc cfg_server {} {
  
     if {[llength [lindex $cfg(listWidths) 1]] == 6} {
         foreach col {#0 #1 #2 #3 #4 #5} wid [lindex $cfg(listWidths) 1] {
-            debug "$col:$wid" darkred
             .net.f.f3.ni.f.tv column $col -width $wid
         }
     }
@@ -880,6 +1010,10 @@ proc cfg_server {} {
     grid rowconfigure .net .net.f -weight 1
     grid rowconfigure .net .net.b3 -weight 0
     
+    if {[lindex $cfg(listWidths) 2]} {
+        .net.f select  [lindex $cfg(listWidths) 2]
+    }
+ 
     wm protocol .net WM_DELETE_WINDOW {.net.b3 invoke}
 
     if {[regexp {\+-?[0-9]+\+-?[0-9]+} $cfg(geometry)]} {
@@ -893,8 +1027,7 @@ proc bindWidths {} {
     
     lset cfg(listWidths) 0 [lmap col {#0 #1 #2 #3 #4 #5} {.net.f.f1.ni.f.tv column $col -width}]
     lset cfg(listWidths) 1 [lmap col {#0 #1 #2 #3 #4 #5} {.net.f.f3.ni.f.tv column $col -width}]
-    debug "tv col widths:$cfg(listWidths)" darkred
-
+    lset cfg(listWidths) 2 [.net.f index current]
 }
 
 #! Get images for Configuration dialog
@@ -911,6 +1044,22 @@ proc imglist {i} {
     return [list $img($i) disabled $dim]
 }
 
+proc cfg_varflag {} {
+    global mqttname varflag
+    
+    set row [mk::select cfg.devices name $mqttname]
+    mk::set cfg.devices!$row varflag $varflag
+}
+
+proc cfg_varselected {} {
+    global mqttflag
+    
+    if {$mqttflag > 255 && $mqttflag < 512} {
+       grid x .net.usr.xb1
+    } else {
+       grid remove .net.usr.xb1   
+    }
+}
 
 proc cfg_userpass {} {
     global cfg
@@ -921,43 +1070,6 @@ proc cfg_userpass {} {
     } else {
         grid remove .net.f.f2.l15 .net.f.f2.e15
         grid remove .net.f.f2.l16 .net.f.f2.e16
-    }
-}
-
-proc cfg_pluginmenu {} {
-    global cfg
-    
-    set str "MQTT"
-    # Delete any existing menu entries
-    catch {hvMenu Configure delete $str}
-    catch {hvMenu Help delete $str}
-    if {![catch {hvMenu Main cget Plugins -menu} menu]} {
-        if {![catch {hvMenu $menu index $str} x] && $x ne "none"} {
-            hvMenu $menu delete $x
-            hvMenu Main delete Plugins
-        }
-    }
-    if {![catch {hvMenu Help cget Plugins -menu} help]} {
-        if {![catch {hvMenu $help index $str} x] && $x ne "none"} {
-            hvMenu $help delete $x
-            hvMenu Help delete Plugins
-        }
-    }
-    if {[catch {hvMenu Main cget Plugins -menu} menu]} {
-        set menu Main.plugins
-        hvMenu Main add cascade -label Plugins \
-          -menu $menu -underline 0
-    }
-    hvMenu $menu add command \
-      -label "MQTT" -command cfg_server
-
-    if {[hvHelpFile mqtt.hlp]} {
-        if {[catch {hvMenu Help cget Plugins -menu} menu]} {
-            set menu Help.plugins
-            hvMenu Help add cascade -label Plugins -menu $menu
-        }
-        hvMenu $menu add command -label "MQTT" \
-          -command [list hvHelp index]
     }
 }
 
@@ -983,12 +1095,49 @@ proc cfg_device_dbl {w x y} {
 
 # put up device right-click menu
 proc cfg_rtclk {type w x y X Y} {
+    global objtypes
+    
     set item [$w identify item $x $y]
     if {$item ne ""} {
         $w selection set $item
         if {$type eq "ext"} {
         tk_popup .rtclkMenu $X $Y
         } else {
+            set win .net.f.f3.ni.f.tv
+            set item [lindex [$win selection] 0]
+            lassign [$win item $item -values] name topic state id tp
+            dict for {obj info} $objtypes {
+                dict with info {
+                    if {$tp == $order} {
+                        break
+                    }
+                }
+            }
+            if {[dict get $objtypes $obj off] eq ""} {
+                .rtclkMenuint entryconfigure  0 -state disabled 
+            } else {
+                .rtclkMenuint entryconfigure  0 -state normal 
+            }
+            if {[dict get $objtypes $obj on] eq ""} {
+                .rtclkMenuint entryconfigure  1 -state disabled 
+            } else {
+                .rtclkMenuint entryconfigure  1 -state normal 
+            }
+            if {[dict get $objtypes $obj toggle] eq ""} {
+                .rtclkMenuint entryconfigure  2 -state disabled 
+            } else {
+                .rtclkMenuint entryconfigure  2 -state normal 
+            }
+            if {[dict get $objtypes $obj state] eq ""} {
+                .rtclkMenuint entryconfigure  3 -state disabled 
+            } else {
+                .rtclkMenuint entryconfigure  3 -state normal 
+            }
+            if {[dict get $objtypes $obj setto] eq ""} {
+                .rtclkMenuint entryconfigure  4 -state disabled 
+            } else {
+                .rtclkMenuint entryconfigure  4 -state normal 
+            }
             tk_popup .rtclkMenuint $X $Y
     }
     }
@@ -1005,19 +1154,65 @@ proc cfg_rtclkdlg {cmd {type ext}} {
     dict for {obj info} $objtypes {
         dict with info {
             if {$tp == $order} {
-                set object $obj
+                    if {$cmd eq "setto"} {
+                        set cmd ""
+                        cfg_rtclksettodlg $obj
+                    } else {
+                    set cmd [set [string tolower $cmd]]
             }
+                    break
+                }
         }
     }
-        set cmd [dict get $objtypes $object [string tolower $cmd]]
     } else {
         set win .net.f.f1.ni.f.tv
         set item [lindex [$win selection] 0]
-        lassign [$win item $item -values] name topic
+        lassign [$win item $item -values] name
     }
     if {$cmd ne ""} {
         sendCmd $name [createCmd $cmd]
     }
+}
+
+proc cfg_rtclksettodlg {obj} {
+    global setto
+    
+    ttk::toplevel .net.st
+    wm title .net.st "Configure Device"
+    wm transient .net.st .net
+    wm withdraw .net.st
+    
+    ttk::frame .net.st.f1
+    ttk::label .net.st.f1.l1 -text "Set to Value:" -anchor w
+    ttk::entry .net.st.f1.e1 -width 5 -textvariable setto
+    ttk::frame .net.st.f
+    ttk::button .net.st.f.b1 -text OK -width 6 -command [list cfg_rtclksetto $obj] \
+        -image [imglist ok] -compound left
+    ttk::button .net.st.f.b2 -text Cancel -width 6 -command {destroy .net.st} \
+        -image [imglist cancel] -compound left
+    grid .net.st.f1.l1   .net.st.f1.e1   -padx 4  -pady 1 -sticky we
+    grid configure    .net.st.f1.l1    -padx 3  -sticky nes
+    grid .net.st.f1         -       -padx 4  -pady 3 -sticky we
+    grid .net.st.f.b1 .net.st.f.b2 -padx 20 -pady 4
+    grid .net.st.f         -       -padx 4  -pady 3 -sticky we
+    grid anchor .net.st.f1 center
+    grid anchor .net.st.f center
+    bind .net.st.f1.e1 <Return> {.net.st.f.b1 invoke}
+    bind .net.st <F1> {hvHelp users}
+    center .net.st .net
+    grab .net.st
+}
+
+proc cfg_rtclksetto {obj} {
+    global setto
+    
+    if {[string is integer -strict $setto] || [string is double -strict $setto] } {
+        set win .net.f.f3.ni.f.tv
+        set item [lindex [$win selection] 0]
+        lassign [$win item $item -values] name
+        sendCmd $name $setto
+    }
+    destroy .net.st
 }
 
 proc cfg_validate {str type var} {
@@ -1116,10 +1311,11 @@ proc cfg_device_chgdlg {} {
     if {$c eq "-"} {
         set mqttflag 512
     } else {
-        if {[string index $c 0] eq "v"} {
-            set mqttflag [expr {[string range $c 1 end] + 256}]
+        lassign [split $c {-}] grp num
+        if {$grp eq "VA"} {
+            set mqttflag [expr {$num + 256}]
         } else {
-            set mqttflag [string range $c 1 end]
+            set mqttflag $num
         }
     }
      lassign [split $macro /] mqttmacro_on mqttmacro_off
@@ -1140,7 +1336,7 @@ proc cfg_device_chgdlgx10 {} {
     set item [lindex [.net.f.f3.ni.f.tv selection] 0]
     lassign [.net.f.f3.ni.f.tv item $item -values] mqttname mqtttopic mqttstate c type
     if {$c eq "None" || $c eq "-"} {
-        set mqttid 512
+        set mqttid 256
         set mqttobj ""
     } else {
         lassign [split $c {-}] grp num
@@ -1156,6 +1352,18 @@ proc cfg_device_chgdlgx10 {} {
         } elseif {$grp eq "HV"} {
             set mqttid $num
             set mqttobj "hvac"
+        } elseif {$grp eq "TE"} {
+            set mqttid $num
+            set mqttobj "temp"
+        } elseif {$grp eq "AN"} {
+            set mqttid $num
+            set mqttobj "analog"
+        } elseif {[string index $grp 0] eq "I"} {
+            set mqttid [getid input [string index $grp 1] $num]
+            set mqttobj "input"
+        } elseif {[string index $grp 0] eq "O"} {
+            set mqttid [getid output [string index $grp 1] $num]
+            set mqttobj "output"
         } else {
         set mqttid [expr {(([scan $grp %c] - 65)*16) + $num - 1}]
             set mqttobj "x10"
@@ -1173,10 +1381,11 @@ proc cfg_device_chg {item} {
     if {$c eq "-"} {
         set flag 512
     } else {
-        if {[string index $c 0] eq "v"} {
-            set flag [expr {[string range $c 1 end] + 256}]
+        lassign [split $c {-}] grp num
+        if {$grp eq "VA"} {
+            set flag [expr {$num + 256}]
         } else {
-            set flag [string range $c 1 end]
+            set flag $num
         }
     }
     lassign [split $macro /] macro_on macro_off
@@ -1213,9 +1422,9 @@ proc cfg_device_chg {item} {
         set flag "-"
     } else {
         if {$mqttflag > 255} {
-            set flag v[expr {$mqttflag - 256}]
+            set flag VA-[expr {$mqttflag - 256}]
         } else {
-            set flag f$mqttflag
+            set flag FL-$mqttflag
         }
     }
     set macro [expr {$mqttmacro_on < 256?$mqttmacro_on:"-"}]/[expr {$mqttmacro_off < 256?$mqttmacro_off:"-"}]
@@ -1228,25 +1437,18 @@ proc cfg_device_chgx10 {item} {
 
     lassign [.net.f.f3.ni.f.tv item $item -values] name topic state c type level
     if {$c eq "None" || $c eq "-"} {
-        set id 512
+        set id 256
     } else {
     lassign [split $c {-}] grp num
+        set id $num
+        set mqttmodel ""
         if {$grp eq "LI"} {
-            set id $num
             set mqttmodel "light"
-        } elseif {$grp eq "FL"} {
-            set id $num
-            set object "flag"
-            set mqttmodel ""
-        } elseif {$grp eq "VA"} {
-            set id $num
-            set object "var"
-            set mqttmodel ""
-        } elseif {$grp eq "HV"} {
-            set id $num
-            set object "hvac"
-            set mqttmodel ""
-        } else {
+        } elseif {[string index $grp 0] eq "I"} {
+            set id [getid input [string index $grp 1] $num]
+        } elseif {[string index $grp 0] eq "O"} {
+            set id [getid output [string index $grp 1] $num]
+        } elseif {[string match {[A-P]} $grp]} {
     set id [expr {(([scan $grp %c] - 65)*16) + $num - 1}]
             set mqttmodel [lindex [dict keys $x10types] [.net.usr.c3 current]]
         }
@@ -1278,17 +1480,13 @@ proc cfg_device_chgx10 {item} {
 
         if {$mqttobj eq "x10"} {
         set mqttmodel [lindex [dict keys $x10types] [.net.usr.c3 current]]
-    set id [hvObjectId x10 $mqttid]
-    set id [string map {" " -} $id]
-        set type 1
-            set type [dict get $objtypes x10 order]
-            set object "x10"
+        set id [string map {" " -} [hvObjectId x10 $mqttid]]
         } else {
             set mqttmodel ""
             set id "[string toupper [string range $mqttobj 0 1]]-$mqttid"
+    }
             set type [dict get $objtypes $mqttobj order]
             set object $mqttobj
-        }
     if {$mqttobj eq "light"} {
         set mqttmodel "light"
     }
@@ -1299,9 +1497,8 @@ proc cfg_device_chgx10 {item} {
     destroy .net.usr
 }
 
-
 proc cfg_device_addnew {type} {
-    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid mqttobj
+    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid mqttobj varflag
 
     set mqttname ""
     set mqtttopic ""
@@ -1312,15 +1509,20 @@ proc cfg_device_addnew {type} {
     set mqttmacro_off "256"
     set mqttobj ""
     if {$type eq "x10"} {
-        set mqttid "512"
         cfg_device_adddlgx10
     } else {
     cfg_device_adddlg
+        set varflag 1
     }
 }
 
 proc cfg_device_adddlg {} {
-    global mqttname mqtttopic
+    global mqttname mqtttopic varflag
+    
+    set row [mk::select cfg.devices name $mqttname]
+    if {$row ne ""} {
+        set varflag [mk::get cfg.devices!$row varflag]
+    }
 
     ttk::toplevel .net.usr
     wm title .net.usr "Configure Device"
@@ -1330,12 +1532,13 @@ proc cfg_device_adddlg {} {
     ttk::entry .net.usr.e1 -width 20 -textvariable mqttname \
       -validate all -validatecommand "cfg_validate %P name mqtttopic"
     ttk::label .net.usr.l2 -text "Topic:" -anchor w
-    ttk::entry .net.usr.e2 -width 20 -textvariable mqtttopic \
+    ttk::entry .net.usr.e2 -width 40 -textvariable mqtttopic \
       -validate all -validatecommand "cfg_validate %P topic mqttname"
     ttk::label .net.usr.l4 -text "Flag/Var:" -anchor w
     ttk::combobox .net.usr.cb -state readonly -width 28
     bind .net.usr.cb <<ComboboxSelected>> [list setflag .net.usr.cb]
     createflaglist .net.usr.cb
+    ttk::checkbutton .net.usr.xb1 -text "Use Variable as flag" -command {cfg_varflag} -variable varflag
     ttk::label .net.usr.l5 -text "On Macro:" -anchor w
     ttk::combobox .net.usr.cb5 -state readonly -width 28
     bind .net.usr.cb5 <<ComboboxSelected>> [list setmacro .net.usr.cb5 mqttmacro_on]
@@ -1358,6 +1561,7 @@ proc cfg_device_adddlg {} {
     grid  x .net.usr.b3  -padx 4 -pady 1 
     grid .net.usr.l1 .net.usr.e1 -padx 4 -pady 1 -sticky we
     grid .net.usr.l4 .net.usr.cb -padx 4 -pady 1 -sticky we
+    grid       x       .net.usr.xb1 -padx 4 -pady 1
     grid .net.usr.l5 .net.usr.cb5 -padx 4 -pady 1 -sticky we
     grid .net.usr.l6 .net.usr.cb6 -padx 4 -pady 1 -sticky we
     grid .net.usr.sep - -padx 2 -pady {2 0} -sticky we
@@ -1368,6 +1572,7 @@ proc cfg_device_adddlg {} {
     center .net.usr .net
     grab .net.usr
     focus .net.usr.e2
+    cfg_varselected
 }
 
 proc cfg_device_adddlgx10 {} {
@@ -1384,12 +1589,12 @@ proc cfg_device_adddlgx10 {} {
     ttk::combobox .net.usr.c3 -state readonly -width 40 \
       -values [dict values $x10types]
     ttk::label .net.usr.l2 -text "Topic:" -anchor w
-    ttk::entry .net.usr.e2 -width 20 -textvariable mqtttopic \
+    ttk::entry .net.usr.e2 -width 40 -textvariable mqtttopic \
       -validate all -validatecommand "cfg_validate %P topic mqttname"
     ttk::label .net.usr.l4 -text "Object:" -anchor w
     ttk::combobox .net.usr.cb -state readonly -width 28
     bind .net.usr.cb <<ComboboxSelected>> [list setx10 .net.usr.cb mqttid mqttobj]
-    createx10list .net.usr.cb
+    createobjlist .net.usr.cb $mqttobj
     ttk::button .net.usr.b3 -text "Copy Object to Topic, Name"  -command cfg_copy_x10 \
         -image [imglist copy] -compound left
     ttk::separator .net.usr.sep
@@ -1398,9 +1603,13 @@ proc cfg_device_adddlgx10 {} {
         -image [imglist ok] -compound left    
     ttk::button .net.usr.f.b2 -text Cancel -width 6 -command {destroy .net.usr} \
         -image [imglist cancel] -compound left    
-    set row [mk::select cfg.x10 id $mqttid]
+    set row [mk::select cfg.x10 name $mqttname]
     if {![catch {mk::get cfg.x10!$row model} model] && $model ne ""} {
+        if {[mk::get cfg.x10!$row object] in {x10 light}} {
         .net.usr.c3 set [dict get $x10types [mk::get cfg.x10!$row model]]
+    } else {
+	    .net.usr.c3 current 0
+        }
     } else {
 	    .net.usr.c3 current 0
     }
@@ -1418,7 +1627,7 @@ proc cfg_device_adddlgx10 {} {
     bind .net.usr <F1> {hvHelp users}
     center .net.usr .net
     grab .net.usr
-    focus .net.usr.cb
+    focus .net.usr.l2
 }
 
 # set sort orders from clicked headers
@@ -1504,9 +1713,9 @@ proc cfg_sortlistx {type} {
                 lappend values "-"
             } else {
                 if {$flag > 255} {
-                    lappend values v[expr {$flag - 256}]
+                        lappend values VA-[expr {$flag - 256}]
                 } else {
-                    lappend values f$flag
+                        lappend values FL-$flag
                 }
             }
             foreach i [lsearch -all $macro "256"] {
@@ -1514,10 +1723,17 @@ proc cfg_sortlistx {type} {
             }
             lappend values [join $macro "/"]
             } elseif {$type in "x10"} {
-                set values [mk::get cfg.$device!$row name topic state]
-                lassign [mk::get cfg.$device!$row id object] id object
+                set values [mk::get cfg.$device!$row name topic]
+                lassign [mk::get cfg.$device!$row id object state] id object state
+                if {$object eq "hvac"} {
+                    lappend values [lindex {Off Heat Cool Auto} [expr {($state & 0x06)>>1}]]
+                } else {
+                    lappend values $state
+                }
                 if {$object eq "x10"} {
                     lappend values [string map {" " -} [hvObjectId x10 $id]]
+                } elseif {$object in {input output}} {
+                    lappend values [string toupper [string index $object 0]][hvObjectId $object $id]
                 } else {
                     lappend values "[string toupper [string range $object 0 1]]-$id"
                 }
@@ -1531,14 +1747,14 @@ proc cfg_sortlistx {type} {
 proc cfg_copy_topic {} {
     global mqttname mqtttopic mqttmodel
 
-    set mqttname $mqtttopic
+    set mqttname [string map {" " "" ">" "" "<" ""} $mqtttopic]
     cfg_validate $mqtttopic topic mqttname
 }
 
 proc cfg_copy_x10 {} {
     global mqttname mqtttopic mqttid mqttobj
 
-    if {$mqttid >= 512} {return}
+    if {$mqttid >= 256} {return}
 
     if {$mqttobj eq "hvac"} {
         set name "Zone $idx"
@@ -1573,9 +1789,9 @@ proc cfg_device_add {} {
         set flag "-"
     } else {
         if {$mqttflag > 255} {
-            set flag v[expr {$mqttflag - 256}]
+            set flag VA-[expr {$mqttflag - 256}]
         } else {
-            set flag f$mqttflag
+            set flag FL-$mqttflag
         }
     }
     set macro [expr {$mqttmacro_on < 256?$mqttmacro_on:"-"}]/[expr {$mqttmacro_off < 256?$mqttmacro_off:"-"}]
@@ -1602,26 +1818,45 @@ proc cfg_device_addx10 {} {
         return
     }
 
+    set mqttmodel ""
+    set type [dict get $objtypes $mqttobj order]
         if {$mqttobj eq "x10"} {
         set mqttmodel [lindex [dict keys $x10types] [.net.usr.c3 current]]
-    set id [hvObjectId x10 $mqttid]
-    set id [string map {" " -} $id]
-            set type [dict get $objtypes x10 order]
-            set object "x10"
+        set id [string map {" " -} [hvObjectId x10 $mqttid]]
+    } elseif {$mqttobj in {input output}} {
+        set id [string toupper [string index $mqttobj 0]][hvObjectId $mqttobj $mqttid]
         } else {
-            set mqttmodel ""
             set id "[string toupper [string range $mqttobj 0 1]]-$mqttid"
-            set type [dict get $objtypes $mqttobj order]
-            set object $mqttobj
         }
     if {$mqttobj eq "light"} {
         set mqttmodel "light"
     }
    
-    mk::row append cfg.x10 id $mqttid name $mqttname topic $mqtttopic state $mqttstate level 0 type $type model $mqttmodel object $object
+    if {$mqttobj eq "hvac"} {
+        lassign [hvObjectState $mqttobj $mqttid] newstate newlevel mqttmodel
+    } else {
+        lassign [hvStateString $mqttobj $mqttid] newstate newlevel
+        if {$mqttobj in {var temp}} {
+            set newlevel $newstate       
+            set newstate "-"
+        } elseif {$mqttobj eq "flag"} {
+            set newlevel "-"
+        } elseif {$mqttobj in {input output}} {
+            set os [hvObjectState $mqttobj $mqttid]
+            if {$os ne ""} {
+                set newstate [hvObjectLabel $mqttobj $mqttid $os]
+            } else {
+                set newstate "Unknown"
+            }
+            set newlevel "-"
+        }
+    }
+  
+    mk::row append cfg.x10 id $mqttid name $mqttname topic $mqtttopic state $newstate level $newlevel type $type model $mqttmodel object $mqttobj
 
-    .net.f.f3.ni.f.tv insert {} end -values [list $mqttname $mqtttopic $mqttstate $id $type 0] -tags black
+    .net.f.f3.ni.f.tv insert {} end -values [list $mqttname $mqtttopic $mqttstate $id $type $newlevel] -tags black
     destroy .net.usr
+    cfg_sortlist x10
 }
 
 proc cfg_device_del {type} {
@@ -1655,12 +1890,14 @@ proc setflag {w} {
     if {$c eq "None" || $c eq "-"} {
         set mqttflag 512
     } else {
-        if {[string index $c 0] eq "v"} {
-            set mqttflag [expr {[string range $c 1 end] + 256}]
+        lassign [split $c {-}] grp num    
+        if {$grp eq "VA"} {
+            set mqttflag [expr {$num + 256}]
     } else {
-            set mqttflag [string range $c 1 end]
+            set mqttflag $num
         }
     }
+    cfg_varselected
     createflaglist $w
 }
 
@@ -1674,12 +1911,12 @@ proc createflaglist {widget} {
     set val "None"
     for {set v 0; set i 1} {$v < $fcnt} {incr v} {
         set name [hvObjectName flag $v]
-        lappend val "f$v:$name"
+        lappend val "FL-$v:$name"
         incr i
     }
     for {set v 0; set i 1} {$v < $vcnt} {incr v} {
         set name [hvObjectName var $v]
-        lappend val "v$v:$name"
+        lappend val "VA-$v:$name"
         incr i
     }
 
@@ -1703,7 +1940,7 @@ proc setx10 {w vid vobj} {
     
     set c [lindex [split [$w get] ":"] 0]
     if {$c eq "None" || $c eq "-"} {
-        set id 512
+        set id 256
         set object ""
     } else {
         lassign [split $c {-}] grp num
@@ -1719,76 +1956,103 @@ proc setx10 {w vid vobj} {
         } elseif {$grp eq "HV"} {
             set id $num
             set object "hvac"
+        } elseif {$grp eq "TE"} {
+            set id $num
+            set object "temp"
+        } elseif {$grp eq "AN"} {
+            set id $num
+            set object "analog"
+        } elseif {[string index $grp 0] eq "I"} {
+            set id [getid input [string index $grp 1] $num]
+            set object "input"
+        } elseif {[string index $grp 0] eq "O"} {
+            set id [getid output [string index $grp 1] $num]
+            set object "output"
         } else {
         set id [expr {(([scan $grp %c] - 65)*16) + $num - 1}]
             set object "x10"
     }
     }
-    createx10list $w
+    createobjlist $w $object
 }
 
-#! Create x10 list for drop-down box
-proc createx10list {widget} {
+proc getid {type grp num} {
+    set max 8
+    if {$type eq "x10"} {set max 16}
+    if {$num < 1 || $num > $max} {return -1}
+    set cnt [hvObjectCount $type]
+    set i 0
+    while {$cnt > $i} {
+	if {[string tolower [string index [hvObjectId $type $i] 0]] \
+	 eq [string tolower $grp]} {
+	    return [expr {$i + $num - 1}]
+	}
+	incr i $max
+    }
+    return -1
+}
+
+#! Create hv object list for drop-down box
+proc createobjlist {widget {object ""}} {
     global  mqttid mqttobj x10types objlist cfg
 
-    set offset 0
+    set offset 1
     set cnt 0
+    unset -nocomplain objlist
     
-    if {$cfg(x10Enable)} {
-#    debug "Make x10 list; preoff:$offset, precnt:$cnt" green
+    set val "None"
+    if {$cfg(x10Enable) || $object eq "x10"} {
         dict set objlist x10 offset $offset    
     set cnt [hvObjectCount x10]
         dict set objlist x10 count $cnt
-    set val "None"
     for {set v 0; set i 1} {$v < $cnt} {incr v} {
-        set name [hvObjectName x10 $v]
-        set id [hvObjectId x10 $v]
-        set id [string map {" " -} $id]
-        lappend val "$id:$name"
+            lappend val "[string map {" " -} [hvObjectId x10 $v]]:[hvObjectName x10 $v]"
         incr i
     }
     }
 
-    foreach obj {light flag var} {
-        if {$cfg(${obj}Enable)} {  
-#    debug "Make $obj list; preoff:$offset, precnt:$cnt" green
+    foreach obj {light flag var hvac temp analog} {
+        if {$cfg(${obj}Enable) || $object eq $obj} {  
             set offset [expr {$offset + $cnt}]  
             dict set objlist $obj offset $offset
             set cnt [hvObjectCount $obj]   
             dict set objlist $obj count $cnt
             for {set v 0; set i 1} {$v < $cnt} {incr v} {
-                set name [hvObjectName $obj $v]
-                lappend val "[string toupper [string range $obj 0 1]]-$v:$name"
+                if {$obj eq "hvac"} {
+                    lappend val "[string toupper [string range $obj 0 1]]-$i:Zone $i"
+                } else {
+                    lappend val "[string toupper [string range $obj 0 1]]-$v:[hvObjectName $obj $v]"
+                }
                 incr i
             }
         }
     }
     
-    if {$cfg(hvacEnable)} {
-#    debug "Make hvac list; preoff:$offset, precnt:$cnt" green
-        set obj hvac
-        set offset [expr {$offset + $cnt}]  
-        dict set objlist $obj offset $offset
-        set cnt [hvObjectCount $obj]   
-        dict set objlist $obj count $cnt
-        for {set v 0; set i 1} {$v < $cnt} {incr v} {
-            set name "Zone $i"
-            lappend val "[string toupper [string range $obj 0 1]]-$i:$name"
-        incr i
+    foreach obj {input output} {
+        if {$cfg(${obj}Enable) || $object eq $obj} {  
+            set offset [expr {$offset + $cnt}]  
+            dict set objlist $obj offset $offset
+            set cnt [hvObjectCount $obj]   
+            dict set objlist $obj count $cnt
+            for {set v 0; set i 1} {$v < $cnt} {incr v} {
+                lappend val "[string toupper [string index $obj 0]][hvObjectId $obj $v]:[hvObjectName $obj $v]"
+                incr i
+            }
+        }
     }
-    }        
-    debug "Make  list; preoff:$offset, precnt:$cnt" green
 
     $widget configure -values $val
-    if {[llength $val] > 1 && $mqttid ne "" && $mqttid < 512} {
+    if {[llength $val] > 1 && $mqttid ne "" && $mqttid < 256} {
             if {$mqttobj eq "x10"} {
             set idx [expr {$mqttid + 1}]
             .net.usr.c3 state !disabled
             } elseif {$mqttobj eq "hvac"} {
-                set idx [expr {$mqttid + [dict get $objlist $mqttobj offset]}]
+            set idx [expr {$mqttid - 1 + [dict get $objlist $mqttobj offset]}]
+            .net.usr.c3 current 0
                 .net.usr.c3 state disabled
             } else {
-                set idx [expr {$mqttid + 1 + [dict get $objlist $mqttobj offset]}]
+            set idx [expr {$mqttid + [dict get $objlist $mqttobj offset]}]
+            .net.usr.c3 current 0
                 .net.usr.c3 state disabled
             }
         if {$mqttobj eq "light"} {
@@ -1798,12 +2062,13 @@ proc createx10list {widget} {
         $widget current $idx
     } else {
         $widget current 0
-        set mqttid 512
+        set mqttid 256
         set mqttobj ""
     }
 }
 
 proc cfg_objenable {object} {
+# placeholder in case action is needed.
 }
 
 #! Process a macro when selected for a device
@@ -1859,7 +2124,15 @@ if {[hvGuiInit]} {
     # Set combobox foreground to gray when disabled
     ttk::style map TCombobox -foreground \
         [list disabled #8c8c8c]
-    cfg_pluginmenu
+
+    hvMenu [hvMainMenu Main.plugins Plugins] add command \
+      -label "MQTT" -command cfg_server
+
+    if {[hvHelpFile mqtt.hlp]} {
+        hvMenu [hvMainMenu Help.plugins Plugins] add command \
+          -label "MQTT" -command [list hvHelp index]
+    }
+
     bind all <Key-KP_Enter> {event generate %W <Key-Return>}
 }
 
@@ -1868,18 +2141,28 @@ if {[hvGuiInit]} {
 loadconfig
 connect
 subscribe
+devupdate
 
 hvTrigger $cfg(serPre) [list mqttserial]
 hvEventHook exit disconnect
 
-hvEventHook x10update {devupdate x10}
-hvEventHook lightupdate {devupdate light}
-hvEventHook flagupdate {devupdate flag}
-hvEventHook hvacupdate {devupdate hvac}
-hvEventHook varupdate {devupdate var}
+hvEventHook x10update {objupdate x10}
+hvEventHook lightupdate {objupdate light}
+hvEventHook flagupdate {objupdate flag}
+hvEventHook hvacupdate {objupdate hvac}
+hvEventHook varupdate {objupdate var}
+hvEventHook digitaltempupdate {objupdate temp}
+hvEventHook analogupdate {objupdate analog}
+hvEventHook inputupdate {objupdate input}
+hvEventHook outputupdate {objupdate output}
+
 #force updates
 action x10 update
 action light update
 action flag update
 action hvac update
 action var update
+action temp update
+action analog update
+action input update
+action output update

@@ -4,7 +4,7 @@
 
 # Overview
 
-The MQTT Client Plug-in provides an client interface to MQTT for HomeVision. The MQTT interface has has three distinct functions:
+The MQTT Client Plug-in provides a client interface to MQTT for HomeVision. The MQTT interface has has three distinct functions:
 
 * For "External" MQTT-enabled devices (e.g., Sonoff switches with Tasmota SW),
 the MQTT Plug-in acts as an MQTT controller.

@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.37 $
-# $Date: 2018/02/02 01:21:25 $
+# $Revision: 1.39 $
+# $Date: 2018/02/07 05:42:46 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.37 2018/02/02 01:21:25 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.39 2018/02/07 05:42:46 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -61,7 +61,7 @@ set objtypes {
     light  {order 2 on on   off off   toggle toggle state state set on   clear off   setto on  cycle ""}
     flag   {order 3 on set  off clear toggle toggle state state set set  clear clear setto ""  cycle ""}
     var    {order 4 on on   off off   toggle toggle state state set set  clear ""    setto set cycle cycle}
-    hvac   {order 5 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle ""}
+    hvac   {order 5 on ""   off ""    toggle ""     state state set ""   clear ""    setto on  cycle ""}
     temp   {order 6 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle ""}
     analog {order 7 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle ""}
     input  {order 8 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle ""     high ""   low low}
@@ -123,7 +123,7 @@ proc subrecv {topic msg} {
     set l [string last / $topic]
     set resp [string range $topic $l+1 end]
     set device [string range $topic $f+1 $l-1]
-    set match [format {<*%s>*} $device]
+    set match [format {^<*%s>*$} $device]
     debug "Recv'd: $type:$device:$resp, $msg" red
     switch $type \
         $cfg(statPrefix) - $cfg(telePrefix) {
@@ -264,12 +264,14 @@ proc subrecv {topic msg} {
                     set payload [string tolower $msg]
                     set r [mk::select cfg.x10 -regexp topic $match]
                     foreach row $r {
-                        lassign [mk::get cfg.x10!$row id model object varflag] id model object varflag
-                        debug "id:$id,model:$model,object:$object;varflag:$varflag" red
+                        lassign [mk::get cfg.x10!$row id topic state level model object varflag] id dtopic state level model object varflag
+                        debug "match:$match,row:$row,id:$id,model:$model,object:$object;topic:$topic,dtopic:$dtopic,varflag:$varflag" red
 
                         if {$payload eq {} || $payload eq "?"} {
                              debug "No payload: $topic:$msg;" red
-                             sendStatus $row
+                            set objstat [getStatus $row]
+                            debug "id:$id,object:$object;topic:$dtopic;objstat:$objstat" red
+                            sendMqtt pub stat $dtopic pwr [dict get $objstat cmd]
                         } elseif {$payload in {on off toggle set clear low high}} {
                             if {[dict get $objtypes $object $payload] eq ""} {
                                 debug "$object: $type, $resp, $payload not supported." red
@@ -285,18 +287,77 @@ proc subrecv {topic msg} {
                                         set val 1
                                     }
                                 }
+                                mk::set cfg.x10!$row level $val
+                                sendMqtt pub stat $dtopic pwr $val
+                                if {$varflag & 0x02} {
+                                    action var set [expr {$id+1}] 0
+                                }
                                 action var set $id $val
                                 action var update
                             } else {
+                                if {$object eq "flag"} {
+                                    if {$payload eq "toggle"} {
+                                        set cmd [string map -nocase {Set Clear Clear Set} $state]
+                                    } else {
+                                        set cmd [string totitle [dict get $objtypes $object $payload]]
+                                    }
+                                    set newstate $cmd
+                                    set newlevel "-"
+                                } elseif {$object in {output}} {
+                                    set os [dict get $objtypes $object $payload]
+                                    if {$payload eq "toggle"} {
+                                        set cmd [hvObjectLabel $object $id 1]
+                                        if {$cmd eq $state} {
+                                            set cmd [hvObjectLabel $object $id 0]
+                                        } 
+                                    } else {
+                                        set cmd [hvObjectLabel $object $id [string map -nocase {high 1 low 0} $os]]
+                                    }
+                                    set newstate $cmd
+                                    set newlevel "-"
+                                } elseif {$object in {x10 light}} {        
+                                    if {$payload eq "toggle"} {
+                                        set newstate [string map -nocase {On Off Off On} $state
+                                        set cmd [string toupper $newstate]
+                                        set newlevel $level
+                                    } elseif {$payload eq "off"} {
+                                        set newstate "Off"
+                                        set cmd "OFF"
+                                        set newlevel 0
+                                    } elseif {$cmd eq "on"} {
+                                        if {$model eq "app"} {
+                                            set cmd "ON"
+                                            set newlevel $level
+                                        } else {
+                                            set cmd "ON $level"
+                                            set newlevel $level
+                                        }
+                                        set newstate "On"
+                                    }
+                                }
+                                debug "id:$id,object:$object;newstate:$state;newlevel:$newlevel" red
+                                mk::set cfg.x10!$row state $newstate level $newlevel
+                                sendMqtt pub stat $dtopic pwr $cmd
                                 action $object [dict get $objtypes $object $payload] $id
                             }
                         } elseif {[string first "cycle" $payload] != -1} {
                             if {$object eq "var" && !($varflag & 0x01)} {  
+                                set val [hvStateString var $id]
                                 if {$varflag & 0x02} {
-                                    if {[hvStateString var $id] == 255 && ![catch {hvObjectState var [expr {$id+1}]}]} {
+                                    set msb [hvObjectState var [expr {$id+1}]]
+                                    if {$val == 255} {
+                                        set cmd [expr {($msb+1)*256}]
+                                        mk::set cfg.x10!$row level 0
                                         action var increment [expr {$id+1}]
+                                    } else {
+                                        set cmd [expr {($msb)*256 + ($val+1)%256}]
+                                        mk::set cfg.x10!$row level $cmd
                                     }
+                                } else {
+                                    set cmd [expr {($val+1)%256}]
+                                    mk::set cfg.x10!$row level $cmd
                                 }
+                                sendMqtt pub stat $dtopic pwr $cmd
                                 action var increment $id
                                 action var update
                             }
@@ -312,14 +373,17 @@ proc subrecv {topic msg} {
                                     x10 {
                                         set arg [expr {round(16 * $val / 100)}]
                                         set level "level"
+                                            set val [levelpercent $model $arg]
                                     }
                                     pcs {
-                                        set arg [expr {round(31 * $val / 100)}]
+                                            set arg [expr {round(floor(31 * $val / 100))}]
+                                            set val [levelpercent $model $arg]
                                         set level "pcslevel"
                                     }
                                     ext {
                                         set arg [expr {round(63 * $val / 100)}]
                                         set level "directtolevel"
+                                            set val [levelpercent $model $arg]
                                     }
                                     app {
                                         set arg ""
@@ -334,14 +398,25 @@ proc subrecv {topic msg} {
                                         set level "level"
                         }
                     }
+                                    if {$model eq "app"} {
+                                        set cmd "ON"
+                                        mk::set cfg.x10!$row state "On"
+                                    } else {
+                                        set cmd "ON $val"
+                                        mk::set cfg.x10!$row state "On" level $val
+                                    }
+                                    sendMqtt pub stat $dtopic pwr $cmd
                                 action $object {*}[concat $level $id $arg]
                                 action $object update
                                 } elseif {$object eq "flag"} {
                                     if {[expr {0x01 & $val}]} {
-                                        action flag set $id
+                                        set cmd "Set"
                                     } else {
-                                        action flag clear $id
+                                        set cmd "Clear"
                                     }
+                                    mk::set cfg.x10!$row model $cmd
+                                    sendMqtt pub stat $dtopic pwr $cmd
+                                    action flag [string tolower $cmd] $id
                                 } elseif {$object eq "var"} {
                                     set val [expr {0xffff & int($val)}]
                                     if {$varflag & 0x01} {
@@ -350,16 +425,30 @@ proc subrecv {topic msg} {
                                         } else {
                                             set val 0
                                         }
+                                        set cmd $val
+                                        mk::set cfg.x10!$row level $val
                                     } else {
-                                        if {$varflag & 0x02 && ![catch {hvObjectState var [expr {$id+1}]}]} {
+                                        if {$varflag & 0x02} {
+                                            set cmd $val
+                                            mk::set cfg.x10!$row level $cmd
                                             action var set [expr {$id+1}] [expr {$val / 256}]
                                             set val [expr {$val % 256}]
+                                        } else {
+                                            set cmd [expr {0xff & $val}]
+                                            mk::set cfg.x10!$row level $cmd
                                         }
                                     }
+                                    sendMqtt pub stat $dtopic pwr $cmd
                                     action var set $id [expr {0xff & $val}]
                                     action var update
                                 } elseif {$object eq "hvac"} {
                                     if {$val >= 0 && $val <= 99} {
+                                        set cmd [lindex {Hold Run} [expr {$state & 0x01}]]
+                                        append cmd " " [lindex {Off Heat Cool Auto} [expr {($state & 0x06)>>1}]]
+                                        append cmd " " [lindex {Auto On} [expr {($state & 0x08)>>3}]]
+                                        append cmd " " $level " " $val
+                                        mk::set cfg.x10!$row model $val
+                                        sendMqtt pub stat $dtopic pwr $cmd
                                     action hvac setpoint [expr {$id-1}] $val
                                 }
                 }
@@ -374,6 +463,52 @@ proc subrecv {topic msg} {
             debug "Unknown prefix: $type" red
         }
 }
+
+proc levelpercent {model arg} {   
+# Calculate level% based on level input
+#  EXT     PCS     X10   STORED LEVEL   DISPLAYED %
+#  arg     arg     arg       ta         return
+# 
+# 62,63    31      16      10000         100
+# 60,61    30              11111          96
+# 58,59    29      15      01111          93
+# 56,57    28              11110          90
+# 54,55    27      14      01110          87
+#
+#  8,9      4       2      10010          15
+#  6,7      3              00010          12
+#  4,5      2       1      10001           9
+#  2,3      1              00001           6
+#  0,1      0       0      00000           0
+
+    if {$model eq "x10"} {
+        set arg [expr {$arg * 2}]
+    } elseif {$model eq "ext"} {
+        set arg [expr {$arg / 2}]
+    }
+    if {$arg == 0} {
+        set ta 0  
+    } elseif {($arg == 31 && $model eq "pcs") || \
+              ($arg == 32 && $model eq "x10")} {
+        set ta 16
+    } else {
+        set ta [expr {($arg + 1)/2}]
+        if {!($arg & 1)} {
+            set ta [expr {$ta + 16}]
+        }
+    }
+    set bStoredLevel [expr {($ta) & 31}]
+    if {$bStoredLevel == 0} {return {0}}
+    if {$bStoredLevel == 16} {return {100}}
+    set bRegularLevel [expr {$bStoredLevel & 15}]
+    set sTempResult [expr {$bRegularLevel * 2}]
+    if {$bStoredLevel >= 16} {incr sTempResult}
+    if {$model eq "x10"} {
+        return [expr {int($sTempResult * 3.125)-3}]
+    } else {
+        return [expr {int($sTempResult * 3.125)}]
+    }
+}  
 
 proc hvrecv {topic resp msg} {
     global objtypes
@@ -392,33 +527,60 @@ proc hvrecv {topic resp msg} {
         }
     }
     set match [join $objs |]
-    debug "objs:$objs;match:$match;" red
-    
-    set r [mk::select cfg.x10 -regexp object $match -sort object]
-    sendStatus $r
+    foreach row [mk::select cfg.x10 -regexp object $match -sort object] {
+        set objstat [getStatus $row]
+        sendMqtt pub stat [mk::get cfg.x10!$row topic] pwr [dict get $objstat cmd]
+    }
 }
 
-proc sendStatus {r} {
+proc getStatus {row} {
 
-    foreach row $r {
-        lassign [mk::get cfg.x10!$row id topic object] id topic object 
-        debug "id:$id,topic:$topic,object:$object;" red
-        lassign [hvStateString $object $id] newstate newlevel newfan newtemp newsetp
+    lassign [mk::get cfg.x10!$row id name topic state level model object varflag] id name topic state level model object varflag
+    if {$id >= 256} {return}
+    set cmd [hvStateString $object $id]    
+    lassign $cmd newstate newlevel
+    set newsetp $model
         if {$object eq "hvac"} {
-            set cmd "$newstate $newlevel $newfan $newtemp $newsetp"
+        lassign [hvObjectState $object $id] newstate newlevel newsetp
+        } elseif {$object eq "var"} {
+            if {!($varflag & 0x01) && ($varflag & 0x02) && ![catch {hvObjectState $object [expr {$id+1}]} msb]} {
+                set cmd [expr {$msb*256 + $newstate}]
+            set newlevel $cmd
+            } else {
+                set cmd $newstate
+            set newlevel $newstate       
+            }
+        set newstate "-"
+    } elseif {$object in {temp analog}} {
+        set cmd $newstate
+        set newlevel $newstate       
+        set newstate "-"
+    } elseif {$object eq "flag"} {
+        set cmd $newstate
+        set newlevel "-"
         } elseif {$object in {input output}} {
             set os [hvObjectState $object $id]
             if {$os ne ""} {
-                set cmd [hvObjectLabel $object $id $os]
+            set newstate [hvObjectLabel $object $id $os]
             } else {
-                set cmd "Unknown"
+            set newstate "Unknown"
             }
-        } else {
-            set cmd "$newstate $newlevel"
-        }
-        debug "$id -> $topic!: $newstate, $newlevel;cmd: $cmd" blue
-        sendMqtt pub stat $topic pwr $cmd
+        set cmd $newstate
+        set newlevel "-"
+    } elseif {$object in {x10 light}} {        
+                if {[string tolower $newstate] eq "off"} {
+                    set cmd "OFF"
+                } elseif {[string tolower $newstate] eq "on"} {
+                    if {$model eq "app"} {
+                        set cmd "ON"
+                    } else {
+                        set cmd "ON $newlevel"
+                    }
+                } else {
+                    set cmd "Unknown"
+                }
     }  
+    return [dict create cmd $cmd newstate $newstate newlevel $newlevel newsetp $newsetp]
 }
 
 proc devupdate {} {
@@ -441,93 +603,20 @@ proc objupdate {type {publish 1}} {
         dict set updtfp $type 1
         set publish 0
         }
-    mk::loop row cfg.x10 {
-        set refresh 0
-        lassign [mk::get $row id name topic state level model object varflag] id name topic state level model object varflag
-        if {$id >= 256} {continue}
-        if {$type ne $object} {continue}
-        set cmd [hvStateString $type $id]    
-        if {$type eq "hvac"} {
-            lassign [hvObjectState $type $id] newstate newlevel newsetp
-            if {$newstate != $state || $newlevel != $level || $newsetp != $model} {
-                mk::set $row state $newstate level $newlevel model $newsetp
-                set refresh 1
-            }
-        } else {
-            lassign $cmd newstate newlevel
-            if {$type eq "var"} {
-                if {!($varflag & 0x01) && ($varflag & 0x02) && ![catch {hvObjectState $type [expr {$id+1}]} msb]} {
-                    set cmd [expr {$msb*256 + $newstate}]
-                    set newlevel $cmd
-                } else {
-                    set cmd $newstate
-                    set newlevel $newstate       
-                }
-                set newstate "-"
-            } elseif {$type eq "temp"} {
-                set cmd $newstate
-            set newlevel $newstate       
-            set newstate "-"
-        } elseif {$type eq "flag"} {
-                set cmd $newstate
-            set newlevel "-"
-            } elseif {$type in {input output}} {
-                set os [hvObjectState $type $id]
-                if {$os ne ""} {
-                    set newstate [hvObjectLabel $type $id $os]
-                } else {
-                    set newstate "Unknown"
-                }
-                set cmd $newstate
-                set newlevel "-"
+    foreach row [mk::select cfg.x10 -regexp object $type] {
+        lassign [mk::get cfg.x10!$row id name topic state level model object varflag] id name topic state level model object varflag
+        set objstat [getStatus $row]
+        dict with objstat {
+           if {$newstate ne $state || $newlevel ne $level || $newsetp ne $model} {
+                mk::set cfg.x10!$row state $newstate level $newlevel model $newsetp
+                 debug "$object:$id-$topic!:$state->$newstate,$level->$newlevel,$model->$newsetp;cmd:$cmd"
+                if {$publish} {
+                    sendMqtt pub stat $topic pwr $cmd
         }
-        if {$newstate != $state || $newlevel != $level} {
-            mk::set $row state $newstate level $newlevel
-                set refresh 1
-            }
         }
-        if {[string tolower $newstate] eq "off"} {
-            set cmd $newstate
-        }
-        if {$refresh} {
-            debug "$id->$topic!:$state->$newstate,$level->$newlevel;cmd:$cmd"
-        }
-        if {$publish && $refresh} {
-                sendMqtt pub stat $topic pwr $cmd
             }
     }
     cfg_sortlist obj
-
-    if {$type ni {var flag}} {return}
-    return
-    # rethink this part!
-    mk::loop row cfg.devices {
-        lassign [mk::get $row flag varflag] id varflag
-        if {$id >= 512} {continue}
-        if {$id >= 256} {
-            set object "var"
-            set id [expr {$id - 256}]
-        } else {
-            set object "flag"
-        }
-        if {$type ne $object} {continue}
-        set newstate [hvStateString $object $id]    
-        if {$type eq "var"} {
-            if {$varflag & 0x01} {
-                if {0x01 & $newstate} {
-                    set newstate "On"
-                } else {
-                    set newstate "Off"
-                }
-            } else {
-                if {($varflag & 0x02) && ![catch {hvObjectState $type [expr {$id+1}]} msb]} {
-                    set newstate [expr {$msb*256 + $newstate}]
-                }
-            }
-        }
-        mk::set $row state $newstate status 0
-    }
-    cfg_sortlist ext
 }
 
 proc subscribe {{type sub}} {
@@ -1341,6 +1430,7 @@ proc cfg_rtclksettodlg {obj} {
     bind .net.st <F1> {hvHelp users}
     center .net.st .net
     grab .net.st
+    focus .net.st.f1.e1
 }
 
 proc cfg_rtclksetto {obj} {
@@ -2327,29 +2417,34 @@ if {[hvGuiInit]} {
     bind all <Key-KP_Enter> {event generate %W <Key-Return>}
 }
 
-# End Configuration section
+proc init {} {
+    global cfg
 
-loadconfig
-connect
-subscribe
-devupdate
+    loadconfig
+    connect
+    subscribe
+    devupdate
 
-hvTrigger $cfg(serPre) [list mqttserial]
-hvEventHook exit disconnect
+    hvTrigger $cfg(serPre) [list mqttserial]
 
-hvEventHook x10update {objupdate x10}
-hvEventHook lightupdate {objupdate light}
-hvEventHook flagupdate {objupdate flag}
-hvEventHook hvacupdate {objupdate hvac}
-hvEventHook varupdate {objupdate var}
-hvEventHook digitaltempupdate {objupdate temp}
-hvEventHook analogupdate {objupdate analog}
-hvEventHook inputupdate {objupdate input}
-hvEventHook outputupdate {objupdate output}
-
-#force updates
-foreach object {x10 light flag hvac var temp analog input output} {
+    #force updates
+    foreach object {x10 light flag hvac var analog input output} {
     if {[hvObjectCount $object] > 0} {
+            hvEventHook ${object}update [list objupdate $object]
+            action $object update
+        }
+    }
+    if {[hvObjectCount temp] > 0} {
+        hvEventHook digitaltempupdate [list objupdate $object]
         action $object update
     }
 }
+
+# End Configuration section
+
+# Start when HomeVisionXL is ready
+hvEventHook ready init
+# Reconfigure when a new schedule is opened
+hvEventHook open init 
+# Gracefully close MQTT session when exiting
+hvEventHook exit disconnect

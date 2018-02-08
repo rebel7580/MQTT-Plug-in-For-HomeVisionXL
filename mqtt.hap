@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.40 $
-# $Date: 2018/02/08 02:34:24 $
+# $Revision: 1.41 $
+# $Date: 2018/02/08 22:43:43 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.40 2018/02/08 02:34:24 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.41 2018/02/08 22:43:43 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -1852,10 +1852,10 @@ proc cfg_object_chgdlg {} {
         } elseif {$grp eq "AN"} {
             set mqttid $num
             set mqttobj "analog"
-        } elseif {[string index $grp 0] eq "I"} {
+        } elseif {[regexp {^I[A-Q]$} $grp]} {
             set mqttid [getid input [string index $grp 1] $num]
             set mqttobj "input"
-        } elseif {[string index $grp 0] eq "O"} {
+        } elseif {[regexp {^O[A-Q]$} $grp]} {
             set mqttid [getid output [string index $grp 1] $num]
             set mqttobj "output"
         } else {
@@ -1942,9 +1942,9 @@ proc cfg_object_chg {item} {
         set mqttmodel ""
         if {$grp eq "LI"} {
             set mqttmodel "light"
-        } elseif {[string index $grp 0] eq "I"} {
+        } elseif {[regexp {^I[A-Q]$} $grp]} {
             set id [getid input [string index $grp 1] $num]
-        } elseif {[string index $grp 0] eq "O"} {
+        } elseif {[regexp {^O[A-Q]$} $grp]} {
             set id [getid output [string index $grp 1] $num]
         } elseif {[string match {[A-P]} $grp]} {
     set id [expr {(([scan $grp %c] - 65)*16) + $num - 1}]
@@ -2238,10 +2238,10 @@ proc cfg_object_set {w vid vobj} {
         } elseif {$grp eq "AN"} {
             set id $num
             set object "analog"
-        } elseif {[string index $grp 0] eq "I"} {
+        } elseif {[regexp {^I[A-Q]$} $grp]} {
             set id [getid input [string index $grp 1] $num]
             set object "input"
-        } elseif {[string index $grp 0] eq "O"} {
+        } elseif {[regexp {^O[A-Q]$} $grp]} {
             set id [getid output [string index $grp 1] $num]
             set object "output"
         } else {

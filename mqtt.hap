@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.39 $
-# $Date: 2018/02/07 05:42:46 $
+# $Revision: 1.40 $
+# $Date: 2018/02/08 02:34:24 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.39 2018/02/07 05:42:46 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.40 2018/02/08 02:34:24 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -317,7 +317,7 @@ proc subrecv {topic msg} {
                                     set newlevel "-"
                                 } elseif {$object in {x10 light}} {        
                                     if {$payload eq "toggle"} {
-                                        set newstate [string map -nocase {On Off Off On} $state
+                                        set newstate [string map -nocase {On Off Off On} $state]
                                         set cmd [string toupper $newstate]
                                         set newlevel $level
                                     } elseif {$payload eq "off"} {

@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.42 $
-# $Date: 2018/02/09 16:07:27 $
+# $Revision: 1.43 $
+# $Date: 2018/02/11 18:22:36 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.42 2018/02/09 16:07:27 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.43 2018/02/11 18:22:36 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -2067,9 +2067,13 @@ proc cfg_sortlistx {type} {
         if {$type eq "obj"} {
             set device "x10"
             set win .net.f.f3.ni.f.tv
+            .net.f.f3.ni.b1 state disabled
+            .net.f.f3.ni.b3 state disabled
         } else {
             set device "devices"
             set win .net.f.f1.ni.f.tv
+            .net.f.f1.ni.b1 state disabled
+            .net.f.f1.ni.b3 state disabled
         }
         if {$cfg(sortX10) != 0} {
             #sort via id field

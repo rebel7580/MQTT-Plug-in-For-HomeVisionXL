@@ -1,17 +1,18 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.43 $
-# $Date: 2018/02/11 18:22:36 $
+# $Revision: 1.46 $
+# $Date: 2018/02/19 23:04:18 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.43 2018/02/11 18:22:36 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.46 2018/02/19 23:04:18 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
 set cfgfileroot [file tail [file rootnam [info script]]]
+set txtext [expr {$tcl_platform(platform) eq "windows" ? ".txt" : ""}]
 
 array set cfg {
     serPre "mqtt:"
@@ -45,6 +46,8 @@ array set cfg {
     inputEnable  0
     outputEnable 0
     listWidths  {0 0 0}
+    logging      0
+    logpath      ""
 }
 
 set x10types {
@@ -139,7 +142,10 @@ proc subrecv {topic msg} {
                     debug "$resp: payload:$payload;" red
                     set row [mk::select cfg.devices -regexp topic $match]
             if {$row ne ""} {
-                        lassign [mk::get cfg.devices!$row flag macro_on macro_off varflag] id macro_on macro_off varflag
+                        lassign [mk::get cfg.devices!$row flag macro_on macro_off varflag loglevel] id macro_on macro_off varflag loglevel
+                        if {$loglevel & 0x01} {
+                            mqttlog "rx: $topic $msg"
+                        }
                         if {$payload eq {}} {
                     debug "No payload: $topic: $msg" red
                         } elseif {$payload eq "on"} {
@@ -242,6 +248,10 @@ proc subrecv {topic msg} {
             debug "LWT-$device:$msg" red
                     set row [mk::select cfg.devices -regexp topic $match]
             if {$row ne ""} {
+                        lassign [mk::get cfg.devices!$row loglevel] loglevel
+                        if {$loglevel & 0x01} {
+                            mqttlog "rx: $topic $msg"
+                        }
                         set payload [string tolower $msg]
                         if {$payload eq "online"} {
                     mk::set cfg.devices!$row status 0
@@ -256,6 +266,7 @@ proc subrecv {topic msg} {
             
         } $cfg(cmndPrefix) {
             if {[string first "homevision" [string tolower $device]] != -1} {
+                mqttlog "rx: $topic $msg"
                 hvrecv $device $resp $msg
                 return
             }
@@ -264,14 +275,17 @@ proc subrecv {topic msg} {
                     set payload [string tolower $msg]
                     set r [mk::select cfg.x10 -regexp topic $match]
                     foreach row $r {
-                        lassign [mk::get cfg.x10!$row id topic state level model object varflag] id dtopic state level model object varflag
-                        debug "match:$match,row:$row,id:$id,model:$model,object:$object;topic:$topic,dtopic:$dtopic,varflag:$varflag" red
+                        lassign [mk::get cfg.x10!$row id topic state level model object varflag loglevel] id dtopic state level model object varflag loglevel
+                        debug "match:$match,row:$row,id:$id,model:$model,object:$object;topic:$topic,dtopic:$dtopic,varflag:$varflag:loglevel:$loglevel" red
+                        if {$loglevel & 0x01} {
+                            mqttlog "rx: $topic $msg"
+                        }
 
                         if {$payload eq {} || $payload eq "?"} {
                              debug "No payload: $topic:$msg;" red
                             set objstat [getStatus $row]
                             debug "id:$id,object:$object;topic:$dtopic;objstat:$objstat" red
-                            sendMqtt pub stat $dtopic pwr [dict get $objstat cmd]
+                            sendMqtt pub stat $dtopic pwr [dict get $objstat cmd] [expr {($loglevel & 0x02)>>1}]
                         } elseif {$payload in {on off toggle set clear low high}} {
                             if {[dict get $objtypes $object $payload] eq ""} {
                                 debug "$object: $type, $resp, $payload not supported." red
@@ -288,7 +302,7 @@ proc subrecv {topic msg} {
                                     }
                                 }
                                 mk::set cfg.x10!$row level $val
-                                sendMqtt pub stat $dtopic pwr $val
+                                sendMqtt pub stat $dtopic pwr $val [expr {($loglevel & 0x02)>>1}]
                                 if {$varflag & 0x02} {
                                     action var set [expr {$id+1}] 0
                                 }
@@ -316,28 +330,27 @@ proc subrecv {topic msg} {
                                     set newstate $cmd
                                     set newlevel "-"
                                 } elseif {$object in {x10 light}} {        
+                                    set tmppay $payload
                                     if {$payload eq "toggle"} {
-                                        set newstate [string map -nocase {On Off Off On} $state]
-                                        set cmd [string toupper $newstate]
-                                        set newlevel $level
-                                    } elseif {$payload eq "off"} {
-                                        set newstate "Off"
+                                        set tmppay [string map -nocase {On off Off on} $state]
+                                    }
+                                    if {$tmppay eq "off"} {
                                         set cmd "OFF"
+                                        set newstate "Off"
                                         set newlevel 0
-                                    } elseif {$payload eq "on"} {
+                                    } elseif {$tmppay eq "on"} {
                                         if {$model eq "app"} {
                                             set cmd "ON"
-                                            set newlevel 100
                                         } else {
-                                            set cmd "ON $level"
-                                            set newlevel $level
+                                            set cmd "ON 100"
                                         }
+                                        set newlevel 100
                                         set newstate "On"
                                     }
                                 }
                                 debug "id:$id,object:$object;newstate:$state;newlevel:$newlevel" red
                                 mk::set cfg.x10!$row state $newstate level $newlevel
-                                sendMqtt pub stat $dtopic pwr $cmd
+                                sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
                                 action $object [dict get $objtypes $object $payload] $id
                             }
                         } elseif {[string first "cycle" $payload] != -1} {
@@ -357,7 +370,7 @@ proc subrecv {topic msg} {
                                     set cmd [expr {($val+1)%256}]
                                     mk::set cfg.x10!$row level $cmd
                                 }
-                                sendMqtt pub stat $dtopic pwr $cmd
+                                sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
                                 action var increment $id
                                 action var update
                             }
@@ -405,7 +418,7 @@ proc subrecv {topic msg} {
                                         set cmd "ON $val"
                                         mk::set cfg.x10!$row state "On" level $val
                                     }
-                                    sendMqtt pub stat $dtopic pwr $cmd
+                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
                                 action $object {*}[concat $level $id $arg]
                                 action $object update
                                 } elseif {$object eq "flag"} {
@@ -415,7 +428,7 @@ proc subrecv {topic msg} {
                                         set cmd "Clear"
                                     }
                                     mk::set cfg.x10!$row model $cmd
-                                    sendMqtt pub stat $dtopic pwr $cmd
+                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
                                     action flag [string tolower $cmd] $id
                                 } elseif {$object eq "var"} {
                                     set val [expr {0xffff & int($val)}]
@@ -438,7 +451,7 @@ proc subrecv {topic msg} {
                                             mk::set cfg.x10!$row level $cmd
                                         }
                                     }
-                                    sendMqtt pub stat $dtopic pwr $cmd
+                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
                                     action var set $id [expr {0xff & $val}]
                                     action var update
                                 } elseif {$object eq "hvac"} {
@@ -448,7 +461,7 @@ proc subrecv {topic msg} {
                                         append cmd " " [lindex {Auto On} [expr {($state & 0x08)>>3}]]
                                         append cmd " " $level " " $val
                                         mk::set cfg.x10!$row model $val
-                                        sendMqtt pub stat $dtopic pwr $cmd
+                                        sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
                                     action hvac setpoint [expr {$id-1}] $val
                                 }
                 }
@@ -529,7 +542,8 @@ proc hvrecv {topic resp msg} {
     set match [join $objs |]
     foreach row [mk::select cfg.x10 -regexp object $match -sort object] {
         set objstat [getStatus $row]
-        sendMqtt pub stat [mk::get cfg.x10!$row topic] pwr [dict get $objstat cmd]
+        lassign [mk::get cfg.x10!$row topic loglevel] otopic loglevel
+        sendMqtt pub stat $otopic pwr [dict get $objstat cmd] [expr {($loglevel & 0x02)>>1}]
     }
 }
 
@@ -604,14 +618,14 @@ proc objupdate {type {publish 1}} {
         set publish 0
         }
     foreach row [mk::select cfg.x10 -regexp object $type] {
-        lassign [mk::get cfg.x10!$row id name topic state level model object varflag] id name topic state level model object varflag
+        lassign [mk::get cfg.x10!$row id name topic state level model object varflag loglevel] id name topic state level model object varflag loglevel
         set objstat [getStatus $row]
         dict with objstat {
            if {$newstate ne $state || $newlevel ne $level || $newsetp ne $model} {
                 mk::set cfg.x10!$row state $newstate level $newlevel model $newsetp
                  debug "$object:$id-$topic!:$state->$newstate,$level->$newlevel,$model->$newsetp;cmd:$cmd"
                 if {$publish} {
-                    sendMqtt pub stat $topic pwr $cmd
+                    sendMqtt pub stat $topic pwr $cmd [expr {($loglevel & 0x02)>>1}]
         }
         }
             }
@@ -648,20 +662,23 @@ proc sendCmd {name cmd} {
     if {$name in {pub}} {
         set cmd [lassign $cmd topic]
         set topic [string trim $topic {\}\{}]
+        set log 1
     } elseif {$name in {sub unsub}} {
         lassign $cmd topic
         set topic [string trim $topic {\}\{}]
         set cmd "subrecv"
+        set log 0
     } else {
     foreach device {"devices" "x10"} {
         set row [mk::select cfg.$device name $name]
         if {$row ne ""} {break}
     }
     if {$row eq ""} {return}
-    set topic [mk::get cfg.$device!$row topic]
+        lassign [mk::get cfg.$device!$row topic loglevel] topic loglevel
         set name "pub"
+        set log [expr {($loglevel & 0x02)>>1}]
     }
-    sendMqtt $name cmnd $topic pwr $cmd
+    sendMqtt $name cmnd $topic pwr $cmd $log
 }
 
 # Create command to send
@@ -680,7 +697,7 @@ proc createCmd {cmd} {
     return $state
 }
 
-proc sendMqtt {action pre topic post cmd} {
+proc sendMqtt {action pre topic post cmd {log 0}} {
     global cfg mymqtt
 
     set npre [expr {[info exists cfg(${pre}Prefix)]?$cfg(${pre}Prefix):$pre}]/
@@ -704,6 +721,43 @@ proc sendMqtt {action pre topic post cmd} {
             debug "Unsubscribed from $topic!"
         }
     }
+    if {$log} {
+        mqttlog "tx: $topic $cmd"
+    }
+}
+
+#! Write NetIO status information to log file
+proc mqttlog {str} {
+    global loghandle mqttlogdate cfg txtext
+
+    if {!$cfg(logging)} return
+    set time [clock seconds]
+    set date [clock format $time -format %y%m%d]
+    if {![info exists loghandle] || $date ne $mqttlogdate} {
+        if {[info exists loghandle]} {
+            catch {close $loghandle}
+        }
+        if {[catch {file mkdir $cfg(logpath)}]} {
+            set cfg(logging) 0
+            error "Failed to access NetIO log directory"
+        }
+        set file [file join $cfg(logpath) MQTTLog$date$txtext]
+        if {[file exists $file]} {
+            set mod [file mtime $file]
+            if {$time - $mod > 86400} {
+                file delete $file
+            }
+        }
+        if {[catch {open $file a} loghandle]} {
+            unset loghandle
+            set cfg(logging) 0
+            error "Failed to open NetIO log file"
+        }
+        set mqttlogdate $date
+    }
+    debug $str red
+    puts -nonewline $loghandle "[clock format $time -format "%d.%m.%Y %H.%M.%S"]\t$str\n"
+    catch {flush $loghandle}
 }
 
 # End MQTT Section
@@ -811,11 +865,11 @@ proc loadconfig {} {
     }
     # Ext Devices
     mk::view layout cfg.devices {
-        name topic state status flag macro_on macro_off stopic ltopic varflag
+        name topic state status flag macro_on macro_off stopic ltopic varflag loglevel
     }
     #Int Devices
     mk::view layout cfg.x10 {
-        id name topic state level type model stopic ltopic object varflag
+        id name topic state level type model stopic ltopic object varflag loglevel
     }
 
     if {[catch {hvConfig Geometry} geometry]} {
@@ -904,6 +958,18 @@ proc loadconfig {} {
         }
         set saveflag 1
     }
+    if {$cfg(version) < 9} {
+    debug "old version $cfg(version)" red
+        set cfg(version) 9
+        debug "Adding loglevel" red
+        mk::loop row cfg.x10 {
+            mk::set $row loglevel 0
+        }
+        mk::loop row cfg.devices {
+            mk::set $row loglevel 0
+        }        
+        set saveflag 1
+    }
     
     debug "New version $cfg(version)" green
 
@@ -933,8 +999,8 @@ proc loadconfig {} {
 proc saveconfig {{top ""}} {
     global cfg cfgfile
     
-    if {[winfo exists .net]} {
-        set cfg(geometry) [wm geometry .net]
+    if {[winfo exists .mqtt]} {
+        set cfg(geometry) [wm geometry .mqtt]
     }
     mk::view size cfg.main 0
     foreach {var val} [array get cfg] {
@@ -959,137 +1025,137 @@ proc saveconfig {{top ""}} {
 proc cfg_mqtt {} {
     global cfg
     
-    if {[winfo exists .net]} {
-        wm withdraw .net
-        wm deiconify .net
+    if {[winfo exists .mqtt]} {
+        wm withdraw .mqtt
+        wm deiconify .mqtt
         return
     }
-    ttk::toplevel .net
-    wm withdraw .net
-    wm title .net "MQTT Configuration"
-   # wm resizable .net 0 0
+    ttk::toplevel .mqtt
+    wm withdraw .mqtt
+    wm title .mqtt "MQTT Configuration"
+   # wm resizable .mqtt 0 0
 
-    ttk::notebook .net.f
+    ttk::notebook .mqtt.f
     
     # Ext Devices tab
-    ttk::frame .net.f.f1 -relief groove -borderwidth 2
-    ttk::frame .net.f.f1.ni
-    ttk::frame .net.f.f1.ni.f
-    ttk::treeview .net.f.f1.ni.f.tv -columns {name topic state flag macro} \
+    ttk::frame .mqtt.f.f1 -relief groove -borderwidth 2
+    ttk::frame .mqtt.f.f1.ni
+    ttk::frame .mqtt.f.f1.ni.f
+    ttk::treeview .mqtt.f.f1.ni.f.tv -columns {name topic state flag macro} \
       -displaycolumns {name topic flag macro state} -show headings -height 5 \
-      -yscrollcommand {.net.f.f1.ni.f.vs set} -selectmode browse
-    .net.f.f1.ni.f.tv column name -stretch 1 -width 120 -anchor center
-    .net.f.f1.ni.f.tv heading name -text "Device Name" -command [list cfg_sort name]
-    .net.f.f1.ni.f.tv column topic -stretch 1 -width 120 -anchor center
-    .net.f.f1.ni.f.tv heading topic -text "Topic" -command [list cfg_sort topic]
-    .net.f.f1.ni.f.tv column state -stretch 1 -width 70 -anchor center
-    .net.f.f1.ni.f.tv heading state -text "State"
-    .net.f.f1.ni.f.tv column flag -stretch 1 -width 70 -anchor center
-    .net.f.f1.ni.f.tv heading flag -text "Flag/Var"
-    .net.f.f1.ni.f.tv column macro -stretch 1 -width 70 -anchor center
-    .net.f.f1.ni.f.tv heading macro -text "Macro"
-    ttk::scrollbar .net.f.f1.ni.f.vs -command {.net.f.f1.ni.f.tv yview}
-    grid .net.f.f1.ni.f.tv .net.f.f1.ni.f.vs -sticky news
-    grid columnconfigure .net.f.f1.ni.f .net.f.f1.ni.f.tv -weight 1
-    grid rowconfigure .net.f.f1.ni.f .net.f.f1.ni.f.tv -weight 1
-    ttk::button .net.f.f1.ni.b1 -text Edit -command cfg_device_chgdlg -state disabled \
+      -yscrollcommand {.mqtt.f.f1.ni.f.vs set} -selectmode browse
+    .mqtt.f.f1.ni.f.tv column name -stretch 1 -width 120 -anchor center
+    .mqtt.f.f1.ni.f.tv heading name -text "Device Name" -command [list cfg_sort name]
+    .mqtt.f.f1.ni.f.tv column topic -stretch 1 -width 120 -anchor center
+    .mqtt.f.f1.ni.f.tv heading topic -text "Topic" -command [list cfg_sort topic]
+    .mqtt.f.f1.ni.f.tv column state -stretch 1 -width 70 -anchor center
+    .mqtt.f.f1.ni.f.tv heading state -text "State"
+    .mqtt.f.f1.ni.f.tv column flag -stretch 1 -width 70 -anchor center
+    .mqtt.f.f1.ni.f.tv heading flag -text "Flag/Var"
+    .mqtt.f.f1.ni.f.tv column macro -stretch 1 -width 70 -anchor center
+    .mqtt.f.f1.ni.f.tv heading macro -text "Macro"
+    ttk::scrollbar .mqtt.f.f1.ni.f.vs -command {.mqtt.f.f1.ni.f.tv yview}
+    grid .mqtt.f.f1.ni.f.tv .mqtt.f.f1.ni.f.vs -sticky news
+    grid columnconfigure .mqtt.f.f1.ni.f .mqtt.f.f1.ni.f.tv -weight 1
+    grid rowconfigure .mqtt.f.f1.ni.f .mqtt.f.f1.ni.f.tv -weight 1
+    ttk::button .mqtt.f.f1.ni.b1 -text Edit -command cfg_device_chgdlg -state disabled \
         -image [imglist quickedit] -compound left
-    ttk::button .net.f.f1.ni.b2 -text New -command {cfg_device_addnew ext} \
+    ttk::button .mqtt.f.f1.ni.b2 -text New -command {cfg_device_addnew ext} \
         -image [imglist add] -compound left   
-    ttk::button .net.f.f1.ni.b3 -text Delete -command {cfg_device_del ext} -state disabled \
+    ttk::button .mqtt.f.f1.ni.b3 -text Delete -command {cfg_device_del ext} -state disabled \
         -image [imglist delete] -compound left
-    grid .net.f.f1.ni.f - - -padx 4 -pady 4 -sticky wens
-    grid .net.f.f1.ni.b1 .net.f.f1.ni.b2 .net.f.f1.ni.b3 -padx 4 -pady 4 -sticky ew
-    grid columnconfigure .net.f.f1.ni all -weight 1
-    grid rowconfigure .net.f.f1.ni .net.f.f1.ni.f -weight 1
-    bind .net.f.f1.ni.f.tv <<TreeviewSelect>> {cfg_devicesel %W}
-    bind .net.f.f1.ni.f.tv <Double-1> {cfg_device_dbl %W %x %y}
+    grid .mqtt.f.f1.ni.f - - -padx 4 -pady 4 -sticky wens
+    grid .mqtt.f.f1.ni.b1 .mqtt.f.f1.ni.b2 .mqtt.f.f1.ni.b3 -padx 4 -pady 4 -sticky ew
+    grid columnconfigure .mqtt.f.f1.ni all -weight 1
+    grid rowconfigure .mqtt.f.f1.ni .mqtt.f.f1.ni.f -weight 1
+    bind .mqtt.f.f1.ni.f.tv <<TreeviewSelect>> {cfg_devicesel %W}
+    bind .mqtt.f.f1.ni.f.tv <Double-1> {cfg_device_dbl %W %x %y}
     destroy .rtclkMenu
     set m [menu .rtclkMenu]
     $m add command -label "Off" -command {cfg_rtclkdlg Off}
     $m add command -label "On" -command {cfg_rtclkdlg On}
     $m add command -label "Toggle" -command {cfg_rtclkdlg Toggle}
     $m add command -label "State" -command {cfg_rtclkdlg State}
-    bind .net.f.f1.ni.f.tv <Button-3> {cfg_rtclk ext %W %x %y %X %Y}
-    catch {.net.f.f1.ni.f.tv tag configure red -foreground red}
-    catch {.net.f.f1.ni.f.tv tag configure black -foreground black}
+    bind .mqtt.f.f1.ni.f.tv <Button-3> {cfg_rtclk ext %W %x %y %X %Y}
+    catch {.mqtt.f.f1.ni.f.tv tag configure red -foreground red}
+    catch {.mqtt.f.f1.ni.f.tv tag configure black -foreground black}
 
     cfg_sortlist ext
     
-    grid .net.f.f1.ni -column 0 -columnspan 2 -sticky news -padx 3
-    grid rowconfigure .net.f.f1 .net.f.f1.ni  -weight 1
-    grid columnconfigure .net.f.f1 1 -weight 1
-    grid .net.f.f1 -sticky news  -padx 5 -pady 5
+    grid .mqtt.f.f1.ni -column 0 -columnspan 2 -sticky news -padx 3
+    grid rowconfigure .mqtt.f.f1 .mqtt.f.f1.ni  -weight 1
+    grid columnconfigure .mqtt.f.f1 1 -weight 1
+    grid .mqtt.f.f1 -sticky news  -padx 5 -pady 5
 
     # Save changes to column widths. Use unmapped dummy widget to
     #  capture values before the treeview widget itself is destroyed.
-    ttk::label .net.f.f1.ni.f.tv.canary
-    bind .net.f.f1.ni.f.tv.canary <Destroy> bindWidths
+    ttk::label .mqtt.f.f1.ni.f.tv.canary
+    bind .mqtt.f.f1.ni.f.tv.canary <Destroy> bindWidths
 
     if {[llength [lindex $cfg(listWidths) 0]] == 6} {
         foreach col {#0 #1 #2 #3 #4 #5} wid [lindex $cfg(listWidths) 0] {
-            .net.f.f1.ni.f.tv column $col -width $wid
+            .mqtt.f.f1.ni.f.tv column $col -width $wid
         }
     }
 
-    .net.f add .net.f.f1 -text "Ext Devices" -underline 0
+    .mqtt.f add .mqtt.f.f1 -text "Ext Devices" -underline 0
 
     # Int Objects tab
-    ttk::frame .net.f.f3 -relief groove -borderwidth 2
-    ttk::frame .net.f.f3.ni
-    ttk::frame .net.f.f3.ni.f
-    ttk::treeview .net.f.f3.ni.f.tv -columns {name topic state id type level} \
+    ttk::frame .mqtt.f.f3 -relief groove -borderwidth 2
+    ttk::frame .mqtt.f.f3.ni
+    ttk::frame .mqtt.f.f3.ni.f
+    ttk::treeview .mqtt.f.f3.ni.f.tv -columns {name topic state id type level} \
       -displaycolumns {id name topic state level} -show headings -height 5 \
-      -yscrollcommand {.net.f.f3.ni.f.vs set} -selectmode browse
-    .net.f.f3.ni.f.tv column name -stretch 1 -width 120 -anchor center
-    .net.f.f3.ni.f.tv heading name -text "Object Name" -command [list cfg_sort name obj]
-    .net.f.f3.ni.f.tv column topic -stretch 1 -width 120 -anchor center
-    .net.f.f3.ni.f.tv heading topic -text "Topic" -command [list cfg_sort topic obj]
-    .net.f.f3.ni.f.tv column state -stretch 1 -width 70 -anchor center
-    .net.f.f3.ni.f.tv heading state -text "State"
-    .net.f.f3.ni.f.tv column id -stretch 1 -width 70 -anchor center
-    .net.f.f3.ni.f.tv heading id -text "ID" -command [list cfg_sort id obj]
-    .net.f.f3.ni.f.tv column type -stretch 1 -width 70 -anchor center
-    .net.f.f3.ni.f.tv heading type -text "Type"
-    .net.f.f3.ni.f.tv column level -stretch 1 -width 70 -anchor center
-    .net.f.f3.ni.f.tv heading level -text "Level"
-    ttk::scrollbar .net.f.f3.ni.f.vs -command {.net.f.f3.ni.f.tv yview}
-    grid .net.f.f3.ni.f.tv .net.f.f3.ni.f.vs -sticky news
-    grid columnconfigure .net.f.f3.ni.f .net.f.f3.ni.f.tv -weight 1
-    grid rowconfigure .net.f.f3.ni.f .net.f.f3.ni.f.tv -weight 1
-    ttk::button .net.f.f3.ni.b1 -text Edit -command cfg_object_chgdlg -state disabled \
+      -yscrollcommand {.mqtt.f.f3.ni.f.vs set} -selectmode browse
+    .mqtt.f.f3.ni.f.tv column name -stretch 1 -width 120 -anchor center
+    .mqtt.f.f3.ni.f.tv heading name -text "Object Name" -command [list cfg_sort name obj]
+    .mqtt.f.f3.ni.f.tv column topic -stretch 1 -width 120 -anchor center
+    .mqtt.f.f3.ni.f.tv heading topic -text "Topic" -command [list cfg_sort topic obj]
+    .mqtt.f.f3.ni.f.tv column state -stretch 1 -width 70 -anchor center
+    .mqtt.f.f3.ni.f.tv heading state -text "State"
+    .mqtt.f.f3.ni.f.tv column id -stretch 1 -width 70 -anchor center
+    .mqtt.f.f3.ni.f.tv heading id -text "ID" -command [list cfg_sort id obj]
+    .mqtt.f.f3.ni.f.tv column type -stretch 1 -width 70 -anchor center
+    .mqtt.f.f3.ni.f.tv heading type -text "Type"
+    .mqtt.f.f3.ni.f.tv column level -stretch 1 -width 70 -anchor center
+    .mqtt.f.f3.ni.f.tv heading level -text "Level"
+    ttk::scrollbar .mqtt.f.f3.ni.f.vs -command {.mqtt.f.f3.ni.f.tv yview}
+    grid .mqtt.f.f3.ni.f.tv .mqtt.f.f3.ni.f.vs -sticky news
+    grid columnconfigure .mqtt.f.f3.ni.f .mqtt.f.f3.ni.f.tv -weight 1
+    grid rowconfigure .mqtt.f.f3.ni.f .mqtt.f.f3.ni.f.tv -weight 1
+    ttk::button .mqtt.f.f3.ni.b1 -text Edit -command cfg_object_chgdlg -state disabled \
         -image [imglist quickedit] -compound left
-    ttk::button .net.f.f3.ni.b2 -text New -command {cfg_device_addnew obj} \
+    ttk::button .mqtt.f.f3.ni.b2 -text New -command {cfg_device_addnew obj} \
         -image [imglist add] -compound left   
-    ttk::button .net.f.f3.ni.b3 -text Delete -command {cfg_device_del x10} -state disabled \
+    ttk::button .mqtt.f.f3.ni.b3 -text Delete -command {cfg_device_del x10} -state disabled \
         -image [imglist delete] -compound left
-    grid .net.f.f3.ni.f - - -padx 4 -pady 4 -sticky wens
-    grid .net.f.f3.ni.b1 .net.f.f3.ni.b2 .net.f.f3.ni.b3 -padx 4 -pady 4 -sticky ew
+    grid .mqtt.f.f3.ni.f - - -padx 4 -pady 4 -sticky wens
+    grid .mqtt.f.f3.ni.b1 .mqtt.f.f3.ni.b2 .mqtt.f.f3.ni.b3 -padx 4 -pady 4 -sticky ew
     
-    ttk::separator .net.f.f3.ni.sep2
-    grid .net.f.f3.ni.sep2 -column 0 -columnspan 3 -sticky ew -padx 3 -pady 3
+    ttk::separator .mqtt.f.f3.ni.sep2
+    grid .mqtt.f.f3.ni.sep2 -column 0 -columnspan 3 -sticky ew -padx 3 -pady 3
     
-    ttk::labelframe .net.f.f3.ni.fo -text "Object Type List Enable"
-    ttk::checkbutton .net.f.f3.ni.fo.c1 -text "X-10" -variable cfg(x10Enable) -command {cfg_objenable x10}
-    ttk::checkbutton .net.f.f3.ni.fo.c2 -text "Custom Lights" -variable cfg(lightEnable) -command {cfg_objenable light}
-    ttk::checkbutton .net.f.f3.ni.fo.c3 -text "Flags" -variable cfg(flagEnable) -command {cfg_objenable flag}
-    ttk::checkbutton .net.f.f3.ni.fo.c4 -text "Variables" -variable cfg(varEnable) -command {cfg_objenable var}
-    ttk::checkbutton .net.f.f3.ni.fo.c5 -text "HVAC" -variable cfg(hvacEnable) -command {cfg_objenable hvac}
-    ttk::checkbutton .net.f.f3.ni.fo.c6 -text "DTS" -variable cfg(tempEnable) -command {cfg_objenable temp}
-    ttk::checkbutton .net.f.f3.ni.fo.c7 -text "Analog" -variable cfg(analogEnable) -command {cfg_objenable analog}
-    ttk::checkbutton .net.f.f3.ni.fo.c8 -text "Inputs" -variable cfg(inputEnable) -command {cfg_objenable input}
-    ttk::checkbutton .net.f.f3.ni.fo.c9 -text "Outputs" -variable cfg(outputEnable) -command {cfg_objenable output}
+    ttk::labelframe .mqtt.f.f3.ni.fo -text "Object Type List Enable"
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c1 -text "X-10" -variable cfg(x10Enable) -command {cfg_objenable x10}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c2 -text "Custom Lights" -variable cfg(lightEnable) -command {cfg_objenable light}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c3 -text "Flags" -variable cfg(flagEnable) -command {cfg_objenable flag}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c4 -text "Variables" -variable cfg(varEnable) -command {cfg_objenable var}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c5 -text "HVAC" -variable cfg(hvacEnable) -command {cfg_objenable hvac}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c6 -text "DTS" -variable cfg(tempEnable) -command {cfg_objenable temp}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c7 -text "Analog" -variable cfg(analogEnable) -command {cfg_objenable analog}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c8 -text "Inputs" -variable cfg(inputEnable) -command {cfg_objenable input}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c9 -text "Outputs" -variable cfg(outputEnable) -command {cfg_objenable output}
 
-    grid .net.f.f3.ni.fo.c1 .net.f.f3.ni.fo.c3 .net.f.f3.ni.fo.c4 .net.f.f3.ni.fo.c8 .net.f.f3.ni.fo.c9  -sticky news -padx 3
-    grid .net.f.f3.ni.fo.c2 .net.f.f3.ni.fo.c5 .net.f.f3.ni.fo.c6 .net.f.f3.ni.fo.c7 .net.f.f3.ni.fo.c8 .net.f.f3.ni.fo.c9  -sticky news -padx 3
-    grid .net.f.f3.ni.fo -columnspan 3 -sticky ew -padx 5 -pady 5
+    grid .mqtt.f.f3.ni.fo.c1 .mqtt.f.f3.ni.fo.c3 .mqtt.f.f3.ni.fo.c4 .mqtt.f.f3.ni.fo.c8 .mqtt.f.f3.ni.fo.c9  -sticky news -padx 3
+    grid .mqtt.f.f3.ni.fo.c2 .mqtt.f.f3.ni.fo.c5 .mqtt.f.f3.ni.fo.c6 .mqtt.f.f3.ni.fo.c7 .mqtt.f.f3.ni.fo.c8 .mqtt.f.f3.ni.fo.c9  -sticky news -padx 3
+    grid .mqtt.f.f3.ni.fo -columnspan 3 -sticky ew -padx 5 -pady 5
 
-    grid columnconfigure .net.f.f3.ni.fo all -weight 1
-    grid columnconfigure .net.f.f3.ni all -weight 1
-    grid rowconfigure .net.f.f3.ni .net.f.f3.ni.f -weight 1
+    grid columnconfigure .mqtt.f.f3.ni.fo all -weight 1
+    grid columnconfigure .mqtt.f.f3.ni all -weight 1
+    grid rowconfigure .mqtt.f.f3.ni .mqtt.f.f3.ni.f -weight 1
    
-    bind .net.f.f3.ni.f.tv <<TreeviewSelect>> {cfg_devicesel %W}
-    bind .net.f.f3.ni.f.tv <Double-1> {cfg_device_dbl %W %x %y}
+    bind .mqtt.f.f3.ni.f.tv <<TreeviewSelect>> {cfg_devicesel %W}
+    bind .mqtt.f.f3.ni.f.tv <Double-1> {cfg_device_dbl %W %x %y}
     destroy .rtclkMenuint
     set m [menu .rtclkMenuint]
     $m add command -label "Off" -command {cfg_rtclkdlg Off x10}
@@ -1097,134 +1163,143 @@ proc cfg_mqtt {} {
     $m add command -label "Toggle" -command {cfg_rtclkdlg Toggle x10}
     $m add command -label "State" -command {cfg_rtclkdlg State x10}
     $m add command -label "Set To" -command {cfg_rtclkdlg setto x10}
-    bind .net.f.f3.ni.f.tv <Button-3> {cfg_rtclk x10 %W %x %y %X %Y}
-    catch {.net.f.f3.ni.f.tv tag configure red -foreground red}
-    catch {.net.f.f3.ni.f.tv tag configure black -foreground black}
+    bind .mqtt.f.f3.ni.f.tv <Button-3> {cfg_rtclk x10 %W %x %y %X %Y}
+    catch {.mqtt.f.f3.ni.f.tv tag configure red -foreground red}
+    catch {.mqtt.f.f3.ni.f.tv tag configure black -foreground black}
 
     cfg_sortlist obj
     
-    grid .net.f.f3.ni -column 0 -columnspan 2 -sticky news -padx 3
-    grid rowconfigure .net.f.f3 .net.f.f3.ni  -weight 1
-    grid columnconfigure .net.f.f3 1 -weight 1
-    grid .net.f.f3 -sticky news  -padx 5 -pady 5
+    grid .mqtt.f.f3.ni -column 0 -columnspan 2 -sticky news -padx 3
+    grid rowconfigure .mqtt.f.f3 .mqtt.f.f3.ni -weight 1
+    grid columnconfigure .mqtt.f.f3 1 -weight 1
+    grid .mqtt.f.f3 -sticky news  -padx 5 -pady 5
  
     if {[llength [lindex $cfg(listWidths) 1]] == 6} {
         foreach col {#0 #1 #2 #3 #4 #5} wid [lindex $cfg(listWidths) 1] {
-            .net.f.f3.ni.f.tv column $col -width $wid
+            .mqtt.f.f3.ni.f.tv column $col -width $wid
         }
     }
     
-    .net.f add .net.f.f3 -text "Int Objects" -underline 0
+    .mqtt.f add .mqtt.f.f3 -text "Int Objects" -underline 0
 
     # Settings Tab
-    ttk::frame .net.f.f2
-    ttk::label .net.f.f2.l17 -text "Command Prefix (<):"  -anchor e
-    ttk::entry .net.f.f2.e17 -width 10 -justify center -textvariable cfg(cmndPrefix)
-    ttk::label .net.f.f2.l18 -text "State Prefix (<):" -anchor e
-    ttk::entry .net.f.f2.e18 -width 10 -justify center -textvariable cfg(statPrefix)
-    ttk::label .net.f.f2.l19 -text "Tele Prefix (<):" -anchor e
-    ttk::entry .net.f.f2.e19 -width 10 -justify center -textvariable cfg(telePrefix)
-    ttk::label .net.f.f2.l20 -text "Power Postfix (>):" -anchor e
-    ttk::entry .net.f.f2.e20 -width 10 -justify center -textvariable cfg(pwrPostfix)
-    ttk::label .net.f.f2.l21 -text "LWT Postfix (>):" -anchor e
-    ttk::entry .net.f.f2.e21 -width 10 -justify center -textvariable cfg(LWTPostfix)
-    ttk::label .net.f.f2.l12 -text "MQTT Broker web/IP Address:" -anchor e
-    ttk::entry .net.f.f2.e12 -width 25 -justify center -textvariable cfg(broker)
+    ttk::frame .mqtt.f.f2
+    ttk::label .mqtt.f.f2.l17 -text "Command Prefix (<):"  -anchor e
+    ttk::entry .mqtt.f.f2.e17 -width 10 -justify center -textvariable cfg(cmndPrefix)
+    ttk::label .mqtt.f.f2.l18 -text "State Prefix (<):" -anchor e
+    ttk::entry .mqtt.f.f2.e18 -width 10 -justify center -textvariable cfg(statPrefix)
+    ttk::label .mqtt.f.f2.l19 -text "Tele Prefix (<):" -anchor e
+    ttk::entry .mqtt.f.f2.e19 -width 10 -justify center -textvariable cfg(telePrefix)
+    ttk::label .mqtt.f.f2.l20 -text "Power Postfix (>):" -anchor e
+    ttk::entry .mqtt.f.f2.e20 -width 10 -justify center -textvariable cfg(pwrPostfix)
+    ttk::label .mqtt.f.f2.l21 -text "LWT Postfix (>):" -anchor e
+    ttk::entry .mqtt.f.f2.e21 -width 10 -justify center -textvariable cfg(LWTPostfix)
+    ttk::label .mqtt.f.f2.l12 -text "MQTT Broker web/IP Address:" -anchor e
+    ttk::entry .mqtt.f.f2.e12 -width 25 -justify center -textvariable cfg(broker)
     
-    bind .net.f <<NotebookTabChanged>> {.net.f.f2.e17 selection clear; focus .net.f.f2.e12; .net.f.f2.e12 icursor end}
+    bind .mqtt.f <<NotebookTabChanged>> {.mqtt.f.f2.e17 selection clear; focus .mqtt.f.f2.e12; .mqtt.f.f2.e12 icursor end}
     
-    ttk::label .net.f.f2.l13 -text "MQTT Broker Port:" -anchor e
-    ttk::entry .net.f.f2.e13 -width 6 -justify center -textvariable cfg(brokerPort)
-    ttk::label .net.f.f2.l22 -text "Publish QOS:" -anchor e
-    ttk::spinbox .net.f.f2.e22 -width 3 -justify center -values {0 1 2} -textvariable cfg(publishQOS)
-    ttk::label .net.f.f2.l23 -text "Subscribe QOS:" -anchor e
-    ttk::spinbox .net.f.f2.e23 -width 3 -justify center -values {0 1 2} -textvariable cfg(subscribeQOS)
-
-    ttk::checkbutton .net.f.f2.c14 -text "Use Username/Password" -variable cfg(userpass) -command cfg_userpass
-    ttk::label .net.f.f2.l15 -text "Username:" -anchor e
-    ttk::entry .net.f.f2.e15 -width 25 -justify center -textvariable cfg(username)
-    ttk::label .net.f.f2.l16 -text "Password:" -anchor e
-    ttk::entry .net.f.f2.e16 -width 25 -justify center -textvariable cfg(password) -show *
-
-    ttk::separator .net.f.f2.sep
-    
-    ttk::label .net.f.f2.l9 -text "Netio string:" -anchor e
-    ttk::entry .net.f.f2.e9 -width 10 -justify center -textvariable cfg(netioType)
-    ttk::label .net.f.f2.l10 -text "Serial string prefix string:" -anchor e
-    ttk::entry .net.f.f2.e10 -width 10 -justify center -textvariable cfg(serPre)
-    ttk::label .net.f.f2.l11 -text "Serial string terminator character(s):" -anchor e
-    ttk::entry .net.f.f2.e11 -width 5 -justify center -textvariable cfg(serPost)
-
-    grid .net.f.f2.l17 .net.f.f2.e17 -sticky nws -padx 3
-    grid configure .net.f.f2.l17     -sticky nes -padx 3
-    grid .net.f.f2.l18 .net.f.f2.e18 -sticky nws -padx 3
-    grid configure .net.f.f2.l18     -sticky nes -padx 3
-    grid .net.f.f2.l19 .net.f.f2.e19 -sticky nws -padx 3
-    grid configure .net.f.f2.l19     -sticky nes -padx 3
-    grid .net.f.f2.l20 .net.f.f2.e20 -sticky nws -padx 3
-    grid configure .net.f.f2.l20     -sticky nes -padx 3
-    grid .net.f.f2.l21 .net.f.f2.e21 -sticky nws -padx 3
-    grid configure .net.f.f2.l21     -sticky nes -padx 3
-  
-    grid .net.f.f2.l12 .net.f.f2.e12 -sticky nws -padx 3
-    grid configure .net.f.f2.l12     -sticky nes -padx 3
-    grid .net.f.f2.l13 .net.f.f2.e13 -sticky nws -padx 3
-    grid configure .net.f.f2.l13     -sticky nes -padx 3
-    grid .net.f.f2.l22 .net.f.f2.e22 -sticky nws -padx 3
-    grid configure .net.f.f2.l22     -sticky nes -padx 3
-    grid .net.f.f2.l23 .net.f.f2.e23 -sticky nws -padx 3
-    grid configure .net.f.f2.l23     -sticky nes -padx 3
-
-    grid x .net.f.f2.c14  -sticky nws -padx 3    
-    grid .net.f.f2.l15 .net.f.f2.e15 -sticky nws -padx 3
-    grid configure .net.f.f2.l15     -sticky nes -padx 3
-    grid .net.f.f2.l16 .net.f.f2.e16 -sticky nws -padx 3
-    grid configure .net.f.f2.l16     -sticky nes -padx 3   
+    ttk::label .mqtt.f.f2.l13 -text "MQTT Broker Port:" -anchor e
+    ttk::entry .mqtt.f.f2.e13 -width 6 -justify center -textvariable cfg(brokerPort)
+    ttk::label .mqtt.f.f2.l22 -text "Publish QOS:" -anchor e
+    ttk::spinbox .mqtt.f.f2.e22 -width 3 -justify center -values {0 1 2} -textvariable cfg(publishQOS)
+    ttk::label .mqtt.f.f2.l23 -text "Subscribe QOS:" -anchor e
+    ttk::spinbox .mqtt.f.f2.e23 -width 3 -justify center -values {0 1 2} -textvariable cfg(subscribeQOS)
  
-    grid .net.f.f2.sep -column 0 -columnspan 2 -sticky ew -padx 3 -pady 3
+    ttk::checkbutton .mqtt.f.f2.c14 -text "Use Username/Password" -variable cfg(userpass) -command cfg_userpass
+    ttk::label .mqtt.f.f2.l15 -text "Username:" -anchor e
+    ttk::entry .mqtt.f.f2.e15 -width 25 -justify center -textvariable cfg(username)
+    ttk::label .mqtt.f.f2.l16 -text "Password:" -anchor e
+    ttk::entry .mqtt.f.f2.e16 -width 25 -justify center -textvariable cfg(password) -show *
+    
+    ttk::checkbutton .mqtt.f.f2.c31 -variable cfg(logging) -text "Create log file" -command cfg_logsel
+    ttk::label .mqtt.f.f2.l31 -text "Log Folder:" -anchor e
+    ttk::entry .mqtt.f.f2.e31  -textvariable cfg(logpath) -state readonly
+    ttk::button .mqtt.f.f2.b31 -width 0 -text "..." -command [list sel_directory .mqtt cfg(logpath)]
+      
+    ttk::separator .mqtt.f.f2.sep
+    
+    ttk::label .mqtt.f.f2.l9 -text "Netio string:" -anchor e
+    ttk::entry .mqtt.f.f2.e9 -width 10 -justify center -textvariable cfg(netioType)
+    ttk::label .mqtt.f.f2.l10 -text "Serial string prefix string:" -anchor e
+    ttk::entry .mqtt.f.f2.e10 -width 10 -justify center -textvariable cfg(serPre)
+    ttk::label .mqtt.f.f2.l11 -text "Serial string terminator character(s):" -anchor e
+    ttk::entry .mqtt.f.f2.e11 -width 5 -justify center -textvariable cfg(serPost)
 
-    grid .net.f.f2.l9 .net.f.f2.e9   -sticky nws -padx 3
-    grid configure .net.f.f2.l9      -sticky nes -padx 3
-    grid .net.f.f2.l10 .net.f.f2.e10 -sticky nws -padx 3
-    grid configure .net.f.f2.l10     -sticky nes -padx 3
-    grid .net.f.f2.l11 .net.f.f2.e11 -sticky nws -padx 3
-    grid configure .net.f.f2.l11     -sticky nes -padx 3
+    grid .mqtt.f.f2.l17 .mqtt.f.f2.e17 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l17     -sticky nes -padx 3
+    grid .mqtt.f.f2.l18 .mqtt.f.f2.e18 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l18     -sticky nes -padx 3
+    grid .mqtt.f.f2.l19 .mqtt.f.f2.e19 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l19     -sticky nes -padx 3
+    grid .mqtt.f.f2.l20 .mqtt.f.f2.e20 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l20     -sticky nes -padx 3
+    grid .mqtt.f.f2.l21 .mqtt.f.f2.e21 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l21     -sticky nes -padx 3
+  
+    grid .mqtt.f.f2.l12 .mqtt.f.f2.e12 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l12     -sticky nes -padx 3
+    grid .mqtt.f.f2.l13 .mqtt.f.f2.e13 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l13     -sticky nes -padx 3
+    grid .mqtt.f.f2.l22 .mqtt.f.f2.e22 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l22     -sticky nes -padx 3
+    grid .mqtt.f.f2.l23 .mqtt.f.f2.e23 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l23     -sticky nes -padx 3
 
-    grid rowconfigure .net.f.f2 all -weight 1
-    grid columnconfigure .net.f.f2 all -weight 1
-    grid .net.f.f2 -sticky news  -padx 5 -pady 5
+    grid x .mqtt.f.f2.c14  -sticky nws -padx 3    
+    grid .mqtt.f.f2.l15 .mqtt.f.f2.e15 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l15     -sticky nes -padx 3
+    grid .mqtt.f.f2.l16 .mqtt.f.f2.e16 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l16     -sticky nes -padx 3   
+ 
+    grid x .mqtt.f.f2.c31 -sticky nws  -padx 3 -pady 1
+    grid .mqtt.f.f2.l31 .mqtt.f.f2.e31 .mqtt.f.f2.b31 -sticky we -padx 3
+
+    grid .mqtt.f.f2.sep -column 0 -columnspan 2 -sticky ew -padx 3 -pady 3
+
+    grid .mqtt.f.f2.l9 .mqtt.f.f2.e9   -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l9      -sticky nes -padx 3
+    grid .mqtt.f.f2.l10 .mqtt.f.f2.e10 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l10     -sticky nes -padx 3
+    grid .mqtt.f.f2.l11 .mqtt.f.f2.e11 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l11     -sticky nes -padx 3
+
+    grid rowconfigure .mqtt.f.f2 all -weight 1
+    grid columnconfigure .mqtt.f.f2 all -weight 1
+    grid .mqtt.f.f2 -sticky news  -padx 5 -pady 5
 
     cfg_userpass    
+    cfg_logsel
     
-     .net.f add .net.f.f2 -text "Settings" -underline 0
+    .mqtt.f add .mqtt.f.f2 -text "Settings" -underline 0
    
-    grid .net.f    -sticky snew    -padx 5 -pady 5 -columnspan 3
+    grid .mqtt.f    -sticky snew    -padx 5 -pady 5 -columnspan 3
 
-    ttk::button .net.b3 -text Done -width 8 -command cfg_done \
+    ttk::button .mqtt.b3 -text Done -width 8 -command cfg_done \
         -image [imglist ok] -compound left
-    grid  .net.b3  -columnspan 3 -padx {4 13} -pady {2 8} 
-    grid columnconfigure .net all -weight 1
-    grid rowconfigure .net .net.f -weight 1
-    grid rowconfigure .net .net.b3 -weight 0
+    grid  .mqtt.b3  -columnspan 3 -padx {4 13} -pady {2 8} 
+    grid columnconfigure .mqtt all -weight 1
+    grid rowconfigure .mqtt .mqtt.f -weight 1
+    grid rowconfigure .mqtt .mqtt.b3 -weight 0  
     
     if {[lindex $cfg(listWidths) 2]} {
-        .net.f select  [lindex $cfg(listWidths) 2]
+        .mqtt.f select  [lindex $cfg(listWidths) 2]
     }
  
-    wm protocol .net WM_DELETE_WINDOW {.net.b3 invoke}
+    wm protocol .mqtt WM_DELETE_WINDOW {.mqtt.b3 invoke}
 
     if {[regexp {\+-?[0-9]+\+-?[0-9]+} $cfg(geometry)]} {
-        wm geometry .net $cfg(geometry)
+        wm geometry .mqtt $cfg(geometry)
     }
-    wm deiconify .net
+    wm deiconify .mqtt
 }
 
 proc bindWidths {} {
     global cfg
     
-    lset cfg(listWidths) 0 [lmap col {#0 #1 #2 #3 #4 #5} {.net.f.f1.ni.f.tv column $col -width}]
-    lset cfg(listWidths) 1 [lmap col {#0 #1 #2 #3 #4 #5} {.net.f.f3.ni.f.tv column $col -width}]
-    lset cfg(listWidths) 2 [.net.f index current]
+    lset cfg(listWidths) 0 [lmap col {#0 #1 #2 #3 #4 #5} {.mqtt.f.f1.ni.f.tv column $col -width}]
+    lset cfg(listWidths) 1 [lmap col {#0 #1 #2 #3 #4 #5} {.mqtt.f.f3.ni.f.tv column $col -width}]
+    lset cfg(listWidths) 2 [.mqtt.f index current]
 }
 
 # Get images for Configuration dialog
@@ -1246,12 +1321,12 @@ proc cfg_varflag {type} {
     
     if {$type in {obj ext}} {
         if {$varflag == 1} {
-            .net.usr.f1.xb2 state disabled
-            .net.usr.f1.xl2 state disabled
+            .mqtt.usr.f1.xb2 state disabled
+            .mqtt.usr.f1.xl2 state disabled
             set vardbl 0
         } else {
-            .net.usr.f1.xb2 state !disabled
-            .net.usr.f1.xl2 state !disabled
+            .mqtt.usr.f1.xb2 state !disabled
+            .mqtt.usr.f1.xl2 state !disabled
         }
     }
     
@@ -1262,7 +1337,7 @@ proc cfg_varflag_select {} {
     
     if {$mqttflag > 255 && $mqttflag < 512} {
        set mqttid [expr {$mqttflag - 256}]
-       grid x .net.usr.f1
+       grid x .mqtt.usr.f1
        if {$mqttid+1 == [hvObjectCount var]} {
            set varlist "(VA-[expr {$mqttid+1}] Not available.)"
            set vardbl 0
@@ -1270,7 +1345,7 @@ proc cfg_varflag_select {} {
             set varlist "(VA-$mqttid, VA-[expr {$mqttid+1}])"
        }
     } else {
-       grid remove .net.usr.f1  
+       grid remove .mqtt.usr.f1  
     }
 }
 
@@ -1278,7 +1353,7 @@ proc cfg_object_varflag_select {} {
     global mqttobj mqttid varlist vardbl
     
     if {$mqttobj eq "var"} {
-       grid x .net.usr.f1
+       grid x .mqtt.usr.f1
        if {$mqttid+1 == [hvObjectCount var]} {
            set varlist "(VA-[expr {$mqttid+1}] Not available.)"
            set vardbl 0
@@ -1286,19 +1361,36 @@ proc cfg_object_varflag_select {} {
             set varlist "(VA-$mqttid, VA-[expr {$mqttid+1}])"
        }
     } else {
-        grid remove .net.usr.f1
+        grid remove .mqtt.usr.f1
     }
+}
+
+proc cfg_logsel {} {
+    global cfg
+
+    if {$cfg(logging)} {
+         grid .mqtt.f.f2.l31 .mqtt.f.f2.e31 .mqtt.f.f2.b31 -sticky we -padx 3
+    } else {
+        grid remove .mqtt.f.f2.l31 .mqtt.f.f2.e31 .mqtt.f.f2.b31
+    }
+}
+
+proc sel_directory {top name} {
+    upvar #0 $name var
+    set dir [ttk::chooseDirectory -initialdir $var -mustexist 1 \
+      -parent $top -title "Select directory"]
+    if {$dir ne ""} {set var $dir}
 }
 
 proc cfg_userpass {} {
     global cfg
     
     if {$cfg(userpass)} {
-        grid .net.f.f2.l15 .net.f.f2.e15
-        grid .net.f.f2.l16 .net.f.f2.e16
+        grid .mqtt.f.f2.l15 .mqtt.f.f2.e15
+        grid .mqtt.f.f2.l16 .mqtt.f.f2.e16
     } else {
-        grid remove .net.f.f2.l15 .net.f.f2.e15
-        grid remove .net.f.f2.l16 .net.f.f2.e16
+        grid remove .mqtt.f.f2.l15 .mqtt.f.f2.e15
+        grid remove .mqtt.f.f2.l16 .mqtt.f.f2.e16
     }
 }
 
@@ -1332,7 +1424,7 @@ proc cfg_rtclk {type w x y X Y} {
         if {$type eq "ext"} {
         tk_popup .rtclkMenu $X $Y
         } else {
-            set win .net.f.f3.ni.f.tv
+            set win .mqtt.f.f3.ni.f.tv
             set item [lindex [$win selection] 0]
             lassign [$win item $item -values] name topic state id tp
             dict for {obj info} $objtypes {
@@ -1377,7 +1469,7 @@ proc cfg_rtclkdlg {cmd {type ext}} {
     global objtypes
     
     if {$type eq "x10"} {
-        set win .net.f.f3.ni.f.tv
+        set win .mqtt.f.f3.ni.f.tv
     set item [lindex [$win selection] 0]
     lassign [$win item $item -values] name topic state id tp
     dict for {obj info} $objtypes {
@@ -1394,7 +1486,7 @@ proc cfg_rtclkdlg {cmd {type ext}} {
         }
     }
     } else {
-        set win .net.f.f1.ni.f.tv
+        set win .mqtt.f.f1.ni.f.tv
         set item [lindex [$win selection] 0]
         lassign [$win item $item -values] name
     }
@@ -1406,43 +1498,43 @@ proc cfg_rtclkdlg {cmd {type ext}} {
 proc cfg_rtclksettodlg {obj} {
     global setto
     
-    ttk::toplevel .net.st
-    wm title .net.st "Configure Device"
-    wm transient .net.st .net
-    wm withdraw .net.st
+    ttk::toplevel .mqtt.st
+    wm title .mqtt.st "Configure Device"
+    wm transient .mqtt.st .mqtt
+    wm withdraw .mqtt.st
     
-    ttk::frame .net.st.f1
-    ttk::label .net.st.f1.l1 -text "Set to Value:" -anchor w
-    ttk::entry .net.st.f1.e1 -width 5 -textvariable setto
-    ttk::frame .net.st.f
-    ttk::button .net.st.f.b1 -text OK -width 6 -command [list cfg_rtclksetto $obj] \
+    ttk::frame .mqtt.st.f1
+    ttk::label .mqtt.st.f1.l1 -text "Set to Value:" -anchor w
+    ttk::entry .mqtt.st.f1.e1 -width 5 -textvariable setto
+    ttk::frame .mqtt.st.f
+    ttk::button .mqtt.st.f.b1 -text OK -width 6 -command [list cfg_rtclksetto $obj] \
         -image [imglist ok] -compound left
-    ttk::button .net.st.f.b2 -text Cancel -width 6 -command {destroy .net.st} \
+    ttk::button .mqtt.st.f.b2 -text Cancel -width 6 -command {destroy .mqtt.st} \
         -image [imglist cancel] -compound left
-    grid .net.st.f1.l1   .net.st.f1.e1   -padx 4  -pady 1 -sticky we
-    grid configure    .net.st.f1.l1    -padx 3  -sticky nes
-    grid .net.st.f1         -       -padx 4  -pady 3 -sticky we
-    grid .net.st.f.b1 .net.st.f.b2 -padx 20 -pady 4
-    grid .net.st.f         -       -padx 4  -pady 3 -sticky we
-    grid anchor .net.st.f1 center
-    grid anchor .net.st.f center
-    bind .net.st.f1.e1 <Return> {.net.st.f.b1 invoke}
-    bind .net.st <F1> {hvHelp users}
-    center .net.st .net
-    grab .net.st
-    focus .net.st.f1.e1
+    grid .mqtt.st.f1.l1   .mqtt.st.f1.e1   -padx 4  -pady 1 -sticky we
+    grid configure    .mqtt.st.f1.l1    -padx 3  -sticky nes
+    grid .mqtt.st.f1         -       -padx 4  -pady 3 -sticky we
+    grid .mqtt.st.f.b1 .mqtt.st.f.b2 -padx 20 -pady 4
+    grid .mqtt.st.f         -       -padx 4  -pady 3 -sticky we
+    grid anchor .mqtt.st.f1 center
+    grid anchor .mqtt.st.f center
+    bind .mqtt.st.f1.e1 <Return> {.mqtt.st.f.b1 invoke}
+    bind .mqtt.st <F1> {hvHelp users}
+    center .mqtt.st .mqtt
+    grab .mqtt.st
+    focus .mqtt.st.f1.e1
 }
 
 proc cfg_rtclksetto {obj} {
     global setto
     
     if {[string is integer -strict $setto] || [string is double -strict $setto] } {
-        set win .net.f.f3.ni.f.tv
+        set win .mqtt.f.f3.ni.f.tv
         set item [lindex [$win selection] 0]
         lassign [$win item $item -values] name
         sendCmd $name $setto
     }
-    destroy .net.st
+    destroy .mqtt.st
 }
 
 proc cfg_validate {str type var} {
@@ -1454,9 +1546,9 @@ proc cfg_validate {str type var} {
         set otype "name"
     }
     if {[cfg_validate_$type $str] && [cfg_validate_$otype $other]} {
-        .net.usr.f.b1 state !disabled
+        .mqtt.usr.f.b1 state !disabled
     } else {
-        .net.usr.f.b1 state disabled
+        .mqtt.usr.f.b1 state disabled
     }
     return 1
 }
@@ -1534,20 +1626,20 @@ proc cfg_validate_plus {str} {
 }
 
 proc cfg_device_add {} {
-    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid varflag vardbl
+    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid varflag vardbl logrx logtx
 
     if {$mqttname eq "" || $mqtttopic eq ""} {
-        ttk::messageBox -parent .net.usr -icon error -type ok \
+        ttk::messageBox -parent .mqtt.usr -icon error -type ok \
           -message "Topic and Name must be supplied"
         return
     }
     if {[llength [mk::select cfg.x10 -exact name $mqttname]]} {
-        ttk::messageBox -parent .net.usr -icon error -type ok \
+        ttk::messageBox -parent .mqtt.usr -icon error -type ok \
           -message "Name $mqttname already exists (Int)"
         return
     }
     if {[llength [mk::select cfg.devices -exact name $mqttname]]} {
-        ttk::messageBox -parent .net.usr -icon error -type ok \
+        ttk::messageBox -parent .mqtt.usr -icon error -type ok \
           -message "Name $mqttname already exists (Ext)"
         return
     }
@@ -1563,28 +1655,28 @@ proc cfg_device_add {} {
     }
     set macro [expr {$mqttmacro_on < 256?$mqttmacro_on:"-"}]/[expr {$mqttmacro_off < 256?$mqttmacro_off:"-"}]
 
-    mk::row append cfg.devices name $mqttname topic $mqtttopic state $mqttstate status 0 flag $mqttflag macro_on $mqttmacro_on macro_off $mqttmacro_off varflag [expr {$varflag | ($vardbl<<1)}]
+    mk::row append cfg.devices name $mqttname topic $mqtttopic state $mqttstate status 0 flag $mqttflag macro_on $mqttmacro_on macro_off $mqttmacro_off varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}]
     
-    .net.f.f1.ni.f.tv insert {} end -values [list $mqttname $mqtttopic $mqttstate $flag $macro] -tags black
-    destroy .net.usr
+    .mqtt.f.f1.ni.f.tv insert {} end -values [list $mqttname $mqtttopic $mqttstate $flag $macro] -tags black
+    destroy .mqtt.usr
     cfg_sortlist ext
 }
 
 proc cfg_object_add {} {
-    global mqttname mqtttopic mqttstate mqttid mqttobj x10types objtypes varflag vardbl
+    global mqttname mqtttopic mqttstate mqttid mqttobj x10types objtypes varflag vardbl logrx logtx
 
     if {$mqttname eq "" || $mqtttopic eq ""} {
-        ttk::messageBox -parent .net.usr -icon error -type ok \
+        ttk::messageBox -parent .mqtt.usr -icon error -type ok \
           -message "Topic and Name must be supplied"
         return
     }
     if {[llength [mk::select cfg.x10 -exact name $mqttname]]} {
-        ttk::messageBox -parent .net.usr -icon error -type ok \
+        ttk::messageBox -parent .mqtt.usr -icon error -type ok \
           -message "Name $mqttname already exists (Int)"
         return
     }
     if {[llength [mk::select cfg.devices -exact name $mqttname]]} {
-        ttk::messageBox -parent .net.usr -icon error -type ok \
+        ttk::messageBox -parent .mqtt.usr -icon error -type ok \
           -message "Name $mqttname already exists (Ext)"
         return
     }
@@ -1592,7 +1684,7 @@ proc cfg_object_add {} {
     set mqttmodel ""
     set type [dict get $objtypes $mqttobj order]
     if {$mqttobj eq "x10"} {
-        set mqttmodel [lindex [dict keys $x10types] [.net.usr.c3 current]]
+        set mqttmodel [lindex [dict keys $x10types] [.mqtt.usr.c3 current]]
         set id [string map {" " -} [hvObjectId x10 $mqttid]]
     } elseif {$mqttobj in {input output}} {
         set id [string toupper [string index $mqttobj 0]][hvObjectId $mqttobj $mqttid]
@@ -1623,15 +1715,15 @@ proc cfg_object_add {} {
         }
     }
   
-    mk::row append cfg.x10 id $mqttid name $mqttname topic $mqtttopic state $newstate level $newlevel type $type model $mqttmodel object $mqttobj varflag [expr {$varflag | ($vardbl<<1)}]
+    mk::row append cfg.x10 id $mqttid name $mqttname topic $mqtttopic state $newstate level $newlevel type $type model $mqttmodel object $mqttobj varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}]
 
-    .net.f.f3.ni.f.tv insert {} end -values [list $mqttname $mqtttopic $mqttstate $id $type $newlevel] -tags black
-    destroy .net.usr
+    .mqtt.f.f3.ni.f.tv insert {} end -values [list $mqttname $mqtttopic $mqttstate $id $type $newlevel] -tags black
+    destroy .mqtt.usr
     cfg_sortlist obj
 }
 
 proc cfg_device_addnew {type} {
-    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid mqttobj mqttvarflag varflag mqttvardbl vardbl
+    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid mqttobj mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx
 
     set mqttname ""
     set mqtttopic ""
@@ -1646,6 +1738,9 @@ proc cfg_device_addnew {type} {
     set varflag 1
     set mqttvardbl 0
     set vardbl 0
+    set mqttloglevel 0
+    set logrx 0
+    set logtx 0
     
     if {$type eq "obj"} {
         cfg_object_adddlg
@@ -1655,144 +1750,163 @@ proc cfg_device_addnew {type} {
 }
 
 proc cfg_device_adddlg {} {
-    global mqttname mqtttopic mqttvarflag varflag mqttvardbl vardbl
+    global mqttname mqtttopic mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx
     
     set row [mk::select cfg.devices name $mqttname]
     if {$row ne ""} {
-        set varflag [mk::get cfg.devices!$row varflag]
+        lassign [mk::get cfg.devices!$row varflag loglevel] varflag loglevel
         set vardbl [expr {($varflag & 0x02)>>1}]
         set mqttvardbl $vardbl
         set varflag [expr {$varflag & 0x01}]
         set mqttvarflag $varflag
+        set mqttloglevel $loglevel
+        set logtx [expr {($loglevel & 0x02)>>1}]
+        set logrx [expr {$loglevel & 0x01}]
     }
 
-    ttk::toplevel .net.usr
-    wm title .net.usr "Configure Device"
-    wm transient .net.usr .net
-    wm withdraw .net.usr
-    ttk::label .net.usr.l1 -text "Name:" -anchor w
-    ttk::entry .net.usr.e1 -width 20 -textvariable mqttname \
+    ttk::toplevel .mqtt.usr
+    wm title .mqtt.usr "Configure Device"
+    wm transient .mqtt.usr .mqtt
+    wm withdraw .mqtt.usr
+    ttk::label .mqtt.usr.l1 -text "Name:" -anchor w
+    ttk::entry .mqtt.usr.e1 -width 20 -textvariable mqttname \
       -validate all -validatecommand "cfg_validate %P name mqtttopic"
-    ttk::label .net.usr.l2 -text "Topic:" -anchor w
-    ttk::entry .net.usr.e2 -width 40 -textvariable mqtttopic \
+    ttk::label .mqtt.usr.l2 -text "Topic:" -anchor w
+    ttk::entry .mqtt.usr.e2 -width 40 -textvariable mqtttopic \
       -validate all -validatecommand "cfg_validate %P topic mqttname"
-    ttk::label .net.usr.l4 -text "Flag/Var:" -anchor w
-    ttk::combobox .net.usr.cb -state readonly -width 28
-    bind .net.usr.cb <<ComboboxSelected>> [list cfg_flag_set .net.usr.cb]
-    createflaglist .net.usr.cb
-    ttk::frame .net.usr.f1
-    ttk::checkbutton .net.usr.f1.xb1 -text "Use Variable as flag" -command {cfg_varflag ext} -variable varflag
-    ttk::checkbutton .net.usr.f1.xb2 -text "Use two Variables" -command {cfg_varflag dbl} -variable vardbl
-    ttk::label .net.usr.f1.xl2 -textvariable varlist -anchor w
-    ttk::label .net.usr.l5 -text "On Macro:" -anchor w
-    ttk::combobox .net.usr.cb5 -state readonly -width 28
-    bind .net.usr.cb5 <<ComboboxSelected>> [list cfg_macro_set .net.usr.cb5 mqttmacro_on]
-    createmacrolist .net.usr.cb5 mqttmacro_on
-    ttk::label .net.usr.l6 -text "Off Macro:" -anchor w
-    ttk::combobox .net.usr.cb6 -state readonly -width 28
-    bind .net.usr.cb6 <<ComboboxSelected>> [list cfg_macro_set .net.usr.cb6 mqttmacro_off]
-    createmacrolist .net.usr.cb6 mqttmacro_off
-    ttk::button .net.usr.b3 -text "Copy Topic to Name"  -command cfg_topic_copy \
+    ttk::label .mqtt.usr.l4 -text "Flag/Var:" -anchor w
+    ttk::combobox .mqtt.usr.cb -state readonly -width 28
+    bind .mqtt.usr.cb <<ComboboxSelected>> [list cfg_flag_set .mqtt.usr.cb]
+    createflaglist .mqtt.usr.cb
+    ttk::frame .mqtt.usr.f1
+    ttk::checkbutton .mqtt.usr.f1.xb1 -text "Use Variable as flag" -command {cfg_varflag ext} -variable varflag
+    ttk::checkbutton .mqtt.usr.f1.xb2 -text "Use two Variables" -command {cfg_varflag dbl} -variable vardbl
+    ttk::label .mqtt.usr.f1.xl2 -textvariable varlist -anchor w
+    ttk::label .mqtt.usr.l5 -text "On Macro:" -anchor w
+    ttk::combobox .mqtt.usr.cb5 -state readonly -width 28
+    bind .mqtt.usr.cb5 <<ComboboxSelected>> [list cfg_macro_set .mqtt.usr.cb5 mqttmacro_on]
+    createmacrolist .mqtt.usr.cb5 mqttmacro_on
+    ttk::label .mqtt.usr.l6 -text "Off Macro:" -anchor w
+    ttk::combobox .mqtt.usr.cb6 -state readonly -width 28
+    bind .mqtt.usr.cb6 <<ComboboxSelected>> [list cfg_macro_set .mqtt.usr.cb6 mqttmacro_off]
+    createmacrolist .mqtt.usr.cb6 mqttmacro_off
+    ttk::button .mqtt.usr.b3 -text "Copy Topic to Name"  -command cfg_topic_copy \
         -image [imglist copy] -compound left
-    ttk::separator .net.usr.sep
-    ttk::frame .net.usr.f
-    ttk::button .net.usr.f.b1 -text OK -width 6 -command cfg_device_add -state disabled \
+    ttk::frame .mqtt.usr.f2
+    ttk::checkbutton .mqtt.usr.f2.xb3 -text "Log received messages" -variable logrx
+    ttk::checkbutton .mqtt.usr.f2.xb4 -text "Log sent messages" -variable logtx
+    ttk::separator .mqtt.usr.sep
+    ttk::frame .mqtt.usr.f
+    ttk::button .mqtt.usr.f.b1 -text OK -width 6 -command cfg_device_add -state disabled \
         -image [imglist ok] -compound left
-    ttk::button .net.usr.f.b2 -text Cancel -width 6 -command {destroy .net.usr;cfg_sortlist ext} \
+    ttk::button .mqtt.usr.f.b2 -text Cancel -width 6 -command {destroy .mqtt.usr;cfg_sortlist ext} \
         -image [imglist cancel] -compound left
-    grid .net.usr.f.b1 .net.usr.f.b2 -padx 20 -pady 4
-    grid anchor .net.usr.f center
-    grid .net.usr.f1.xb1 -padx 4 -pady 1 -sticky w
-    grid .net.usr.f1.xb2 .net.usr.f1.xl2 -padx 4 -pady 1 -sticky w
-    grid .net.usr.l2   .net.usr.e2  -padx 4 -pady 1 -sticky we
-    grid       x       .net.usr.b3  -padx 4 -pady 1
-    grid .net.usr.l1   .net.usr.e1  -padx 4 -pady 1 -sticky we
-    grid .net.usr.l4   .net.usr.cb  -padx 4 -pady 1 -sticky we
-    grid       x       .net.usr.f1 -padx 4 -pady 1
-    grid .net.usr.l5   .net.usr.cb5 -padx 4 -pady 1 -sticky we
-    grid .net.usr.l6   .net.usr.cb6 -padx 4 -pady 1 -sticky we
-    grid .net.usr.sep - -padx 2 -pady {2 0} -sticky we
-    grid .net.usr.f - -padx 4 -pady 3 -sticky we
-    grid columnconfigure .net.usr .net.usr.e2 -weight 1
-    bind .net.usr.e2 <Return> {.net.usr.f.b1 invoke}
-    bind .net.usr <F1> {hvHelp users}
-    center .net.usr .net
-    grab .net.usr
-    focus .net.usr.e2
+    grid .mqtt.usr.f.b1 .mqtt.usr.f.b2 -padx 20 -pady 4
+    grid anchor .mqtt.usr.f center
+    grid .mqtt.usr.f1.xb1 -padx 4 -pady 1 -sticky w
+    grid .mqtt.usr.f1.xb2 .mqtt.usr.f1.xl2 -padx 4 -pady 1 -sticky w
+    grid .mqtt.usr.l2   .mqtt.usr.e2  -padx 4 -pady 1 -sticky we
+    grid       x       .mqtt.usr.b3  -padx 4 -pady 1
+    grid .mqtt.usr.l1   .mqtt.usr.e1  -padx 4 -pady 1 -sticky we
+    grid .mqtt.usr.l4   .mqtt.usr.cb  -padx 4 -pady 1 -sticky we
+    grid       x        .mqtt.usr.f1  -sticky w
+    grid .mqtt.usr.l5   .mqtt.usr.cb5 -padx 4 -pady 1 -sticky we
+    grid .mqtt.usr.l6   .mqtt.usr.cb6 -padx 4 -pady 1 -sticky we
+    grid .mqtt.usr.f2.xb3 -padx 4 -pady 1
+    grid .mqtt.usr.f2.xb4 -padx 4 -pady 1 -sticky we
+    grid       x      .mqtt.usr.f2 -sticky w
+    grid .mqtt.usr.sep - -padx 2 -pady {2 0} -sticky we
+    grid .mqtt.usr.f - -padx 4 -pady 3 -sticky we
+    grid columnconfigure .mqtt.usr .mqtt.usr.e2 -weight 1
+    bind .mqtt.usr.e2 <Return> {.mqtt.usr.f.b1 invoke}
+    bind .mqtt.usr <F1> {hvHelp users}
+    center .mqtt.usr .mqtt
+    grab .mqtt.usr
+    focus .mqtt.usr.e2
     cfg_varflag_select
     cfg_varflag ext
 }
 
 proc cfg_object_adddlg {} {
-    global mqttname mqtttopic mqttid mqttobj x10types mqttvarflag varflag mqttvardbl vardbl
+    global mqttname mqtttopic mqttid mqttobj x10types mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx
 
     set row [mk::select cfg.x10 name $mqttname]
     if {$row ne ""} {
-        set varflag [mk::get cfg.x10!$row varflag]
+        lassign [mk::get cfg.x10!$row varflag loglevel] varflag loglevel
         set vardbl [expr {($varflag & 0x02)>>1}]
         set mqttvardbl $vardbl
         set varflag [expr {$varflag & 0x01}]
         set mqttvarflag $varflag
+        set mqttloglevel $loglevel
+        set logtx [expr {($loglevel & 0x02)>>1}]
+        set logrx [expr {$loglevel & 0x01}]
     }
 
-    ttk::toplevel .net.usr
-    wm title .net.usr "Configure Object"
-    wm transient .net.usr .net
-    wm withdraw .net.usr
-    ttk::label .net.usr.l1 -text "Name:" -anchor w
-    ttk::entry .net.usr.e1 -width 20 -textvariable mqttname \
+    ttk::toplevel .mqtt.usr
+    wm title .mqtt.usr "Configure Object"
+    wm transient .mqtt.usr .mqtt
+    wm withdraw .mqtt.usr
+    ttk::label .mqtt.usr.l1 -text "Name:" -anchor w
+    ttk::entry .mqtt.usr.e1 -width 20 -textvariable mqttname \
       -validate all -validatecommand "cfg_validate %P name mqtttopic"
-    ttk::label .net.usr.l3 -text "Model:"
-    ttk::combobox .net.usr.c3 -state readonly -width 40 \
+    ttk::label .mqtt.usr.l3 -text "Model:"
+    ttk::combobox .mqtt.usr.c3 -state readonly -width 40 \
       -values [dict values $x10types]
-    ttk::label .net.usr.l2 -text "Topic:" -anchor w
-    ttk::entry .net.usr.e2 -width 40 -textvariable mqtttopic \
+    ttk::label .mqtt.usr.l2 -text "Topic:" -anchor w
+    ttk::entry .mqtt.usr.e2 -width 40 -textvariable mqtttopic \
       -validate all -validatecommand "cfg_validate %P topic mqttname"
-    ttk::label .net.usr.l4 -text "Object:" -anchor w
-    ttk::combobox .net.usr.cb -state readonly -width 28
-    bind .net.usr.cb <<ComboboxSelected>> [list cfg_object_set .net.usr.cb mqttid mqttobj]
-    createobjlist .net.usr.cb $mqttobj
-    ttk::frame .net.usr.f1
-    ttk::checkbutton .net.usr.f1.xb1 -text "Use Variable as flag" -command {cfg_varflag obj} -variable varflag
-    ttk::checkbutton .net.usr.f1.xb2 -text "Use two Variables" -command {cfg_varflag dbl} -variable vardbl
-    ttk::label .net.usr.f1.xl2 -textvariable varlist -anchor w
+    ttk::label .mqtt.usr.l4 -text "Object:" -anchor w
+    ttk::combobox .mqtt.usr.cb -state readonly -width 28
+    bind .mqtt.usr.cb <<ComboboxSelected>> [list cfg_object_set .mqtt.usr.cb mqttid mqttobj]
+    createobjlist .mqtt.usr.cb $mqttobj
+    ttk::frame .mqtt.usr.f1
+    ttk::checkbutton .mqtt.usr.f1.xb1 -text "Use Variable as flag" -command {cfg_varflag obj} -variable varflag
+    ttk::checkbutton .mqtt.usr.f1.xb2 -text "Use two Variables" -command {cfg_varflag dbl} -variable vardbl
+    ttk::label .mqtt.usr.f1.xl2 -textvariable varlist -anchor w
     
-    ttk::button .net.usr.b3 -text "Copy Object to Topic, Name"  -command cfg_object_copy \
+    ttk::button .mqtt.usr.b3 -text "Copy Object to Topic, Name"  -command cfg_object_copy \
         -image [imglist copy] -compound left
-    ttk::separator .net.usr.sep
-    ttk::frame .net.usr.f
-    ttk::button .net.usr.f.b1 -text OK -width 6 -command cfg_object_add -state disabled \
+    ttk::frame .mqtt.usr.f2
+    ttk::checkbutton .mqtt.usr.f2.xb3 -text "Log received messages" -variable logrx
+    ttk::checkbutton .mqtt.usr.f2.xb4 -text "Log sent messages" -variable logtx
+
+    ttk::separator .mqtt.usr.sep
+    ttk::frame .mqtt.usr.f
+    ttk::button .mqtt.usr.f.b1 -text OK -width 6 -command cfg_object_add -state disabled \
         -image [imglist ok] -compound left    
-    ttk::button .net.usr.f.b2 -text Cancel -width 6 -command {destroy .net.usr;cfg_sortlist obj} \
+    ttk::button .mqtt.usr.f.b2 -text Cancel -width 6 -command {destroy .mqtt.usr;cfg_sortlist obj} \
         -image [imglist cancel] -compound left    
     set row [mk::select cfg.x10 name $mqttname]
     if {![catch {mk::get cfg.x10!$row model} model] && $model ne ""} {
         if {[mk::get cfg.x10!$row object] in {x10 light}} {
-            .net.usr.c3 set [dict get $x10types [mk::get cfg.x10!$row model]]
+            .mqtt.usr.c3 set [dict get $x10types [mk::get cfg.x10!$row model]]
         } else {
-            .net.usr.c3 current 0
+            .mqtt.usr.c3 current 0
         }
     } else {
-	    .net.usr.c3 current 0
+	    .mqtt.usr.c3 current 0
     }
-    grid .net.usr.f.b1 .net.usr.f.b2 -padx 20 -pady 4
-    grid anchor .net.usr.f center
-    grid .net.usr.f1.xb1 -padx 4 -pady 1 -sticky w
-    grid .net.usr.f1.xb2 .net.usr.f1.xl2 -padx 4 -pady 1 -sticky w
-    grid .net.usr.l4 .net.usr.cb -padx 4 -pady 1 -sticky we
-    grid  x .net.usr.f1 -padx 4 -pady 1
-    grid .net.usr.l3 .net.usr.c3 -padx 4 -pady 1 -sticky we
-    grid  x .net.usr.b3  -padx 4 -pady 1 
-    grid .net.usr.l2 .net.usr.e2 -padx 4 -pady 1 -sticky we
-    grid .net.usr.l1 .net.usr.e1 -padx 4 -pady 1 -sticky we
-    grid .net.usr.sep - -padx 2 -pady {2 0} -sticky we
-    grid .net.usr.f - -padx 4 -pady 3 -sticky we
-    grid columnconfigure .net.usr .net.usr.e2 -weight 1
-    bind .net.usr.e2 <Return> {.net.usr.f.b1 invoke}
-    bind .net.usr <F1> {hvHelp users}
-    center .net.usr .net
-    grab .net.usr
-    focus .net.usr.l2
+    grid .mqtt.usr.f.b1 .mqtt.usr.f.b2 -padx 20 -pady 4
+    grid anchor .mqtt.usr.f center
+    grid .mqtt.usr.f1.xb1 -padx 4 -pady 1 -sticky w
+    grid .mqtt.usr.f1.xb2 .mqtt.usr.f1.xl2 -padx 4 -pady 1 -sticky w
+    grid .mqtt.usr.l4 .mqtt.usr.cb -padx 4 -pady 1 -sticky we
+    grid  x .mqtt.usr.f1 -padx 4 -pady 1
+    grid .mqtt.usr.l3 .mqtt.usr.c3 -padx 4 -pady 1 -sticky we
+    grid  x .mqtt.usr.b3  -padx 4 -pady 1 
+    grid .mqtt.usr.l2 .mqtt.usr.e2 -padx 4 -pady 1 -sticky we
+    grid .mqtt.usr.l1 .mqtt.usr.e1 -padx 4 -pady 1 -sticky we
+    grid .mqtt.usr.f2.xb3 -padx 4 -pady 1
+    grid .mqtt.usr.f2.xb4 -padx 4 -pady 1 -sticky we
+    grid       x      .mqtt.usr.f2 -sticky w
+    grid .mqtt.usr.sep - -padx 2 -pady {2 0} -sticky we
+    grid .mqtt.usr.f - -padx 4 -pady 3 -sticky we
+    grid columnconfigure .mqtt.usr .mqtt.usr.e2 -weight 1
+    bind .mqtt.usr.e2 <Return> {.mqtt.usr.f.b1 invoke}
+    bind .mqtt.usr <F1> {hvHelp users}
+    center .mqtt.usr .mqtt
+    grab .mqtt.usr
+    focus .mqtt.usr.l2
     cfg_varflag obj
     cfg_object_varflag_select
 }
@@ -1800,8 +1914,8 @@ proc cfg_object_adddlg {} {
 proc cfg_device_chgdlg {} {
     global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttvarflag varflag
 
-    set item [lindex [.net.f.f1.ni.f.tv selection] 0]
-    lassign [.net.f.f1.ni.f.tv item $item -values] mqttname mqtttopic mqttstate c macro
+    set item [lindex [.mqtt.f.f1.ni.f.tv selection] 0]
+    lassign [.mqtt.f.f1.ni.f.tv item $item -values] mqttname mqtttopic mqttstate c macro
     if {$c eq "-"} {
         set mqttflag 512
     } else {
@@ -1820,15 +1934,15 @@ proc cfg_device_chgdlg {} {
         set mqttmacro_off 256
     } 
     cfg_device_adddlg
-    .net.usr.f.b1 configure -command [list cfg_device_chg $item]
+    .mqtt.usr.f.b1 configure -command [list cfg_device_chg $item]
     cfg_validate $mqtttopic topic mqttname
 }
 
 proc cfg_object_chgdlg {} {
     global mqttname mqtttopic mqttstate mqttid mqttobj varflag vardbl
 
-    set item [lindex [.net.f.f3.ni.f.tv selection] 0]
-    lassign [.net.f.f3.ni.f.tv item $item -values] mqttname mqtttopic mqttstate c type
+    set item [lindex [.mqtt.f.f3.ni.f.tv selection] 0]
+    lassign [.mqtt.f.f3.ni.f.tv item $item -values] mqttname mqtttopic mqttstate c type
     if {$c eq "None" || $c eq "-"} {
         set mqttid 256
         set mqttobj ""
@@ -1864,14 +1978,14 @@ proc cfg_object_chgdlg {} {
     }    
     }
     cfg_object_adddlg
-    .net.usr.f.b1 configure -command [list cfg_object_chg $item]
+    .mqtt.usr.f.b1 configure -command [list cfg_object_chg $item]
     cfg_validate $mqtttopic topic mqttname
 }
 
 proc cfg_device_chg {item} {
-    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttvarflag varflag mqttvardbl vardbl
+    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx
 
-    lassign [.net.f.f1.ni.f.tv item $item -values] name topic state c macro
+    lassign [.mqtt.f.f1.ni.f.tv item $item -values] name topic state c macro
     if {$c eq "-"} {
         set flag 512
     } else {
@@ -1894,20 +2008,21 @@ proc cfg_device_chg {item} {
     if {$mqttname eq $name && $mqtttopic eq $topic \
          && $mqttstate eq $state && $mqttflag eq $flag \
          && $mqttmacro_on eq $macro_on && $mqttmacro_off eq $macro_off \
-         && $mqttvarflag eq $varflag && $mqttvardbl eq $vardbl} {
+         && $mqttvarflag eq $varflag && $mqttvardbl eq $vardbl \
+         && $mqttloglevel eq ($logrx | $logtx<<1)} {
         debug "Nothing changed"
-        destroy .net.usr
+        destroy .mqtt.usr
         cfg_sortlist ext
         return
     } 
         if {[llength [mk::select cfg.devices -exact name $mqttname]] &&  \
              $row != [mk::select cfg.devices -exact name $mqttname]} {
-            ttk::messageBox -parent .net.usr -icon error -type ok \
+        ttk::messageBox -parent .mqtt.usr -icon error -type ok \
           -message "Name $mqttname already exists (Ext)"
             return
         }
     if {[llength [mk::select cfg.x10 -exact name $mqtttopic]]} {
-            ttk::messageBox -parent .net.usr -icon error -type ok \
+        ttk::messageBox -parent .mqtt.usr -icon error -type ok \
           -message "Topic $mqtttopic already exists (Int)"
             return
         }
@@ -1923,17 +2038,17 @@ proc cfg_device_chg {item} {
     }
     set macro [expr {$mqttmacro_on < 256?$mqttmacro_on:"-"}]/[expr {$mqttmacro_off < 256?$mqttmacro_off:"-"}]
 
-    mk::set cfg.devices!$row name $mqttname topic $mqtttopic state $mqttstate status 0 flag $mqttflag  macro_on $mqttmacro_on macro_off $mqttmacro_off varflag [expr {$varflag | ($vardbl<<1)}]
+    mk::set cfg.devices!$row name $mqttname topic $mqtttopic  status 0 flag $mqttflag  macro_on $mqttmacro_on macro_off $mqttmacro_off varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}]
     
-    .net.f.f1.ni.f.tv item $item -values [list $mqttname $mqtttopic $mqttstate $flag $macro] -tags black
-    destroy .net.usr
+    .mqtt.f.f1.ni.f.tv item $item -values [list $mqttname $mqtttopic $mqttstate $flag $macro] -tags black
+    destroy .mqtt.usr
     cfg_sortlist ext
 }
 
 proc cfg_object_chg {item} {
-    global mqttname mqtttopic mqttstate mqttid mqttmodel mqttobj x10types objtypes mqttvarflag varflag mqttvardbl vardbl
+    global mqttname mqtttopic mqttstate mqttid mqttmodel mqttobj x10types objtypes mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx
 
-    lassign [.net.f.f3.ni.f.tv item $item -values] name topic state c type level
+    lassign [.mqtt.f.f3.ni.f.tv item $item -values] name topic state c type level
     if {$c eq "None" || $c eq "-"} {
         set id 256
     } else {
@@ -1948,7 +2063,7 @@ proc cfg_object_chg {item} {
             set id [getid output [string index $grp 1] $num]
         } elseif {[string match {[A-P]} $grp]} {
     set id [expr {(([scan $grp %c] - 65)*16) + $num - 1}]
-            set mqttmodel [lindex [dict keys $x10types] [.net.usr.c3 current]]
+            set mqttmodel [lindex [dict keys $x10types] [.mqtt.usr.c3 current]]
         }
     }
 
@@ -1960,26 +2075,27 @@ proc cfg_object_chg {item} {
     }
     if {$mqttname eq $name && $mqtttopic eq $topic && $mqttid eq $id \
         && $mqttmodel eq $model \
-         && $mqttvarflag eq $varflag && $mqttvardbl eq $vardbl} {
+        && $mqttvarflag eq $varflag && $mqttvardbl eq $vardbl \
+        && $mqttloglevel eq ($logrx | $logtx<<1)} {
         debug "Nothing changed"
-        destroy .net.usr
+        destroy .mqtt.usr
         cfg_sortlist obj
         return
     }
         if {[llength [mk::select cfg.x10 -exact name $mqttname]] &&  \
              $row != [mk::select cfg.x10 -exact name $mqttname]} {
-            ttk::messageBox -parent .net.usr -icon error -type ok \
+        ttk::messageBox -parent .mqtt.usr -icon error -type ok \
           -message "Name $mqttname already exists (Int)"
             return
         }
     if {[llength [mk::select cfg.devices -exact name $mqttname]]} {
-        ttk::messageBox -parent .net.usr -icon error -type ok \
+        ttk::messageBox -parent .mqtt.usr -icon error -type ok \
           -message "Name $mqttname already exists (Ext)"
         return
     }
 
         if {$mqttobj eq "x10"} {
-        set mqttmodel [lindex [dict keys $x10types] [.net.usr.c3 current]]
+        set mqttmodel [lindex [dict keys $x10types] [.mqtt.usr.c3 current]]
         set id [string map {" " -} [hvObjectId x10 $mqttid]]
         } else {
             set mqttmodel ""
@@ -1991,10 +2107,10 @@ proc cfg_object_chg {item} {
         set mqttmodel "light"
     }
 
-    mk::set cfg.x10!$row id $mqttid name $mqttname topic $mqtttopic state $mqttstate level $level type $type model $mqttmodel object $object varflag [expr {$varflag | ($vardbl<<1)}]
+    mk::set cfg.x10!$row id $mqttid name $mqttname topic $mqtttopic type $type model $mqttmodel object $object varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}]
 
-    .net.f.f3.ni.f.tv item $item -values [list $mqttname $mqtttopic $mqttstate $id $type $level] -tags black
-    destroy .net.usr
+    .mqtt.f.f3.ni.f.tv item $item -values [list $mqttname $mqtttopic $mqttstate $id $type $level] -tags black
+    destroy .mqtt.usr
     cfg_sortlist obj
 }
 
@@ -2002,9 +2118,9 @@ proc cfg_device_del {type} {
     global mymqtt
 
     if {$type eq "x10"} {
-        set win .net.f.f3.ni.f.tv
+        set win .mqtt.f.f3.ni.f.tv
     } else {
-        set win .net.f.f1.ni.f.tv
+        set win .mqtt.f.f1.ni.f.tv
         set type "devices"
     }
     set name [$win set [$win selection] name]
@@ -2062,18 +2178,18 @@ proc cfg_sortlist {{type {obj ext}}} {
 proc cfg_sortlistx {type} {
     global cfg
 
-    if {[winfo exist .net.usr]} {return}
-    if {[winfo exist .net]} {
+    if {[winfo exist .mqtt.usr]} {return}
+    if {[winfo exist .mqtt]} {
         if {$type eq "obj"} {
             set device "x10"
-            set win .net.f.f3.ni.f.tv
-            .net.f.f3.ni.b1 state disabled
-            .net.f.f3.ni.b3 state disabled
+            set win .mqtt.f.f3.ni.f.tv
+            .mqtt.f.f3.ni.b1 state disabled
+            .mqtt.f.f3.ni.b3 state disabled
         } else {
             set device "devices"
-            set win .net.f.f1.ni.f.tv
-            .net.f.f1.ni.b1 state disabled
-            .net.f.f1.ni.b3 state disabled
+            set win .mqtt.f.f1.ni.f.tv
+            .mqtt.f.f1.ni.b1 state disabled
+            .mqtt.f.f1.ni.b3 state disabled
         }
         if {$cfg(sortX10) != 0} {
             #sort via id field
@@ -2280,7 +2396,6 @@ proc createobjlist {widget {object ""}} {
     set offset 1
     set cnt 0
     unset -nocomplain objlist
-    
     set val "None"
     if {$cfg(x10Enable) || $object eq "x10"} {
         dict set objlist x10 offset $offset    
@@ -2291,7 +2406,6 @@ proc createobjlist {widget {object ""}} {
         incr i
     }
     }
-
     foreach obj {light flag var hvac temp analog} {
         if {$cfg(${obj}Enable) || $object eq $obj} {  
             set offset [expr {$offset + $cnt}]  
@@ -2321,23 +2435,22 @@ proc createobjlist {widget {object ""}} {
             }
         }
     }
-
     $widget configure -values $val
     if {[llength $val] > 1 && $mqttid ne "" && $mqttid < 256} {
             if {$mqttobj eq "x10"} {
             set idx [expr {$mqttid + 1}]
-            .net.usr.c3 state !disabled
+            .mqtt.usr.c3 state !disabled
             } elseif {$mqttobj eq "hvac"} {
             set idx [expr {$mqttid - 1 + [dict get $objlist $mqttobj offset]}]
-            .net.usr.c3 current 0
-                .net.usr.c3 state disabled
+            .mqtt.usr.c3 current 0
+            .mqtt.usr.c3 state disabled
             } else {
             set idx [expr {$mqttid + [dict get $objlist $mqttobj offset]}]
-            .net.usr.c3 current 0
-                .net.usr.c3 state disabled
+            .mqtt.usr.c3 current 0
+            .mqtt.usr.c3 state disabled
             }
         if {$mqttobj eq "light"} {
-            .net.usr.c3 current [expr {[lsearch -exact $x10types "light"] / 2}]
+            .mqtt.usr.c3 current [expr {[lsearch -exact $x10types "light"] / 2}]
         }
         $widget current $idx
     } else {
@@ -2402,7 +2515,7 @@ proc cfg_done {} {
     }
     saveconfig
     subscribe
-    destroy .net
+    destroy .mqtt
 }
 
 if {[hvGuiInit]} {

@@ -36,6 +36,10 @@ You can delete README.md and LICENSE.
 
 The plug-in should be enabled via the Plug-in manager.
 
+# Change Log
+
+The Change Log can be found in the Wiki section [Here](https://github.com/rebel7580/MQTT-Plug-in-For-HomeVisionXL/wiki/Change-Log).
+
 # Help
 
 Help is available through the plug-in. Also, a version of the help file can be found in this Project's [Wiki page](https://github.com/rebel7580/MQTT-Plug-in-For-HomeVisionXL/wiki/Help).

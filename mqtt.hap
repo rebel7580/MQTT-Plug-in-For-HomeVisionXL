@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.46 $
-# $Date: 2018/02/19 23:04:18 $
+# $Revision: 1.48 $
+# $Date: 2018/03/08 21:45:11 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.46 2018/02/19 23:04:18 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.48 2018/03/08 21:45:11 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -360,7 +360,7 @@ proc subrecv {topic msg} {
                                     set msb [hvObjectState var [expr {$id+1}]]
                                     if {$val == 255} {
                                         set cmd [expr {($msb+1)*256}]
-                                        mk::set cfg.x10!$row level 0
+                                        mk::set cfg.x10!$row level $cmd
                                         action var increment [expr {$id+1}]
                                     } else {
                                         set cmd [expr {($msb)*256 + ($val+1)%256}]
@@ -600,10 +600,7 @@ proc getStatus {row} {
 proc devupdate {} {
 
     mk::loop row cfg.devices {
-        lassign [mk::get $row flag name topic] id name topic 
-        
-        if {$id >= 512} {continue}
-        sendCmd $name ""
+        sendCmd [mk::get $row name] ""
     }
 }
 
@@ -739,7 +736,7 @@ proc mqttlog {str} {
         }
         if {[catch {file mkdir $cfg(logpath)}]} {
             set cfg(logging) 0
-            error "Failed to access NetIO log directory"
+            error "Failed to access MQTT log directory"
         }
         set file [file join $cfg(logpath) MQTTLog$date$txtext]
         if {[file exists $file]} {
@@ -751,7 +748,7 @@ proc mqttlog {str} {
         if {[catch {open $file a} loghandle]} {
             unset loghandle
             set cfg(logging) 0
-            error "Failed to open NetIO log file"
+            error "Failed to open MQTT log file"
         }
         set mqttlogdate $date
     }

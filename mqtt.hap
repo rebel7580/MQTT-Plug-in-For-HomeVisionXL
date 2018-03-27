@@ -1,13 +1,13 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.48 $
-# $Date: 2018/03/08 21:45:11 $
+# $Revision: 1.49 $
+# $Date: 2018/03/27 16:55:03 $
 
 hvImport debug
 hvImport action
 
-set version {$Id: hvmqtt.hap,v 1.48 2018/03/08 21:45:11 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.49 2018/03/27 16:55:03 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -124,9 +124,14 @@ proc subrecv {topic msg} {
     set f [string first / $topic]
     set type [string range $topic 0 $f-1]
     set l [string last / $topic]
-    set resp [string range $topic $l+1 end]
     set device [string range $topic $f+1 $l-1]
-    set match [format {^<*%s>*$} $device]
+    set resp [string range $topic $l+1 end]
+    set fmt [format {(%s|%s|%s)([1-9]?)$} $cfg(rstPostfix) $cfg(pwrPostfix) $cfg(LWTPostfix)]
+    if {![regexp $fmt $resp --> resp idx]} {
+        set match [format {^%s$} $device]
+    } else {
+        set match [format {^<*%s>*%s$} $device $idx]
+    }
     debug "Recv'd: $type:$device:$resp, $msg" red
     switch $type \
         $cfg(statPrefix) - $cfg(telePrefix) {
@@ -275,8 +280,8 @@ proc subrecv {topic msg} {
                     set payload [string tolower $msg]
                     set r [mk::select cfg.x10 -regexp topic $match]
                     foreach row $r {
-                        lassign [mk::get cfg.x10!$row id topic state level model object varflag loglevel] id dtopic state level model object varflag loglevel
-                        debug "match:$match,row:$row,id:$id,model:$model,object:$object;topic:$topic,dtopic:$dtopic,varflag:$varflag:loglevel:$loglevel" red
+                        lassign [mk::get cfg.x10!$row id topic state level model object varflag loglevel retain] id dtopic state level model object varflag loglevel retain
+                        debug "match:$match,row:$row,id:$id,model:$model,object:$object;topic:$topic,dtopic:$dtopic,varflag:$varflag:loglevel:$loglevel;retain:$retain" red
                         if {$loglevel & 0x01} {
                             mqttlog "rx: $topic $msg"
                         }
@@ -285,7 +290,7 @@ proc subrecv {topic msg} {
                              debug "No payload: $topic:$msg;" red
                             set objstat [getStatus $row]
                             debug "id:$id,object:$object;topic:$dtopic;objstat:$objstat" red
-                            sendMqtt pub stat $dtopic pwr [dict get $objstat cmd] [expr {($loglevel & 0x02)>>1}]
+                            sendMqtt pub stat $dtopic pwr [dict get $objstat cmd] [expr {($loglevel & 0x02)>>1}] $retain
                         } elseif {$payload in {on off toggle set clear low high}} {
                             if {[dict get $objtypes $object $payload] eq ""} {
                                 debug "$object: $type, $resp, $payload not supported." red
@@ -302,7 +307,7 @@ proc subrecv {topic msg} {
                                     }
                                 }
                                 mk::set cfg.x10!$row level $val
-                                sendMqtt pub stat $dtopic pwr $val [expr {($loglevel & 0x02)>>1}]
+                                sendMqtt pub stat $dtopic pwr $val [expr {($loglevel & 0x02)>>1}] $retain
                                 if {$varflag & 0x02} {
                                     action var set [expr {$id+1}] 0
                                 }
@@ -350,7 +355,7 @@ proc subrecv {topic msg} {
                                 }
                                 debug "id:$id,object:$object;newstate:$state;newlevel:$newlevel" red
                                 mk::set cfg.x10!$row state $newstate level $newlevel
-                                sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
+                                sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
                                 action $object [dict get $objtypes $object $payload] $id
                             }
                         } elseif {[string first "cycle" $payload] != -1} {
@@ -370,7 +375,7 @@ proc subrecv {topic msg} {
                                     set cmd [expr {($val+1)%256}]
                                     mk::set cfg.x10!$row level $cmd
                                 }
-                                sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
+                                sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
                                 action var increment $id
                                 action var update
                             }
@@ -418,7 +423,7 @@ proc subrecv {topic msg} {
                                         set cmd "ON $val"
                                         mk::set cfg.x10!$row state "On" level $val
                                     }
-                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
+                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
                                 action $object {*}[concat $level $id $arg]
                                 action $object update
                                 } elseif {$object eq "flag"} {
@@ -428,7 +433,7 @@ proc subrecv {topic msg} {
                                         set cmd "Clear"
                                     }
                                     mk::set cfg.x10!$row model $cmd
-                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
+                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
                                     action flag [string tolower $cmd] $id
                                 } elseif {$object eq "var"} {
                                     set val [expr {0xffff & int($val)}]
@@ -451,7 +456,7 @@ proc subrecv {topic msg} {
                                             mk::set cfg.x10!$row level $cmd
                                         }
                                     }
-                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
+                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
                                     action var set $id [expr {0xff & $val}]
                                     action var update
                                 } elseif {$object eq "hvac"} {
@@ -461,7 +466,7 @@ proc subrecv {topic msg} {
                                         append cmd " " [lindex {Auto On} [expr {($state & 0x08)>>3}]]
                                         append cmd " " $level " " $val
                                         mk::set cfg.x10!$row model $val
-                                        sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}]
+                                        sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
                                     action hvac setpoint [expr {$id-1}] $val
                                 }
                 }
@@ -542,8 +547,8 @@ proc hvrecv {topic resp msg} {
     set match [join $objs |]
     foreach row [mk::select cfg.x10 -regexp object $match -sort object] {
         set objstat [getStatus $row]
-        lassign [mk::get cfg.x10!$row topic loglevel] otopic loglevel
-        sendMqtt pub stat $otopic pwr [dict get $objstat cmd] [expr {($loglevel & 0x02)>>1}]
+        lassign [mk::get cfg.x10!$row topic loglevel retain] otopic loglevel retain
+        sendMqtt pub stat $otopic pwr [dict get $objstat cmd] [expr {($loglevel & 0x02)>>1}] $retain
     }
 }
 
@@ -615,14 +620,14 @@ proc objupdate {type {publish 1}} {
         set publish 0
         }
     foreach row [mk::select cfg.x10 -regexp object $type] {
-        lassign [mk::get cfg.x10!$row id name topic state level model object varflag loglevel] id name topic state level model object varflag loglevel
+        lassign [mk::get cfg.x10!$row id name topic state level model object varflag loglevel retain] id name topic state level model object varflag loglevel retain
         set objstat [getStatus $row]
         dict with objstat {
            if {$newstate ne $state || $newlevel ne $level || $newsetp ne $model} {
                 mk::set cfg.x10!$row state $newstate level $newlevel model $newsetp
                  debug "$object:$id-$topic!:$state->$newstate,$level->$newlevel,$model->$newsetp;cmd:$cmd"
                 if {$publish} {
-                    sendMqtt pub stat $topic pwr $cmd [expr {($loglevel & 0x02)>>1}]
+                    sendMqtt pub stat $topic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
         }
         }
             }
@@ -656,6 +661,7 @@ proc subscribe {{type sub}} {
 proc sendCmd {name cmd} {
     global mymqtt
 
+    set retain 0
     if {$name in {pub}} {
         set cmd [lassign $cmd topic]
         set topic [string trim $topic {\}\{}]
@@ -671,11 +677,11 @@ proc sendCmd {name cmd} {
         if {$row ne ""} {break}
     }
     if {$row eq ""} {return}
-        lassign [mk::get cfg.$device!$row topic loglevel] topic loglevel
+        lassign [mk::get cfg.$device!$row topic loglevel retain] topic loglevel retain
         set name "pub"
         set log [expr {($loglevel & 0x02)>>1}]
     }
-    sendMqtt $name cmnd $topic pwr $cmd $log
+    sendMqtt $name cmnd $topic pwr $cmd $log $retain
 }
 
 # Create command to send
@@ -694,16 +700,20 @@ proc createCmd {cmd} {
     return $state
 }
 
-proc sendMqtt {action pre topic post cmd {log 0}} {
+proc sendMqtt {action pre topic post cmd args} {
     global cfg mymqtt
 
+    lassign $args log retain
+    if {$log eq "" } {set log 0}
+    if {$retain eq ""} {set retain 0}
     set npre [expr {[info exists cfg(${pre}Prefix)]?$cfg(${pre}Prefix):$pre}]/
-    set npost /[expr {[info exists cfg(${post}Postfix)]?$cfg(${post}Postfix):$post}]
+    set npost /[expr {[info exists cfg(${post}Postfix)]?$cfg(${post}Postfix):$post}]\\2
     regsub {^<} $topic $npre topic
-    regsub {>$} $topic $npost topic
+    regsub {(>)([1-9]?)$} $topic $npost topic
+
     switch $action {
         pub {
-            if {[catch {$mymqtt publish $topic $cmd $cfg(publishQOS)} rc]} {
+            if {[catch {$mymqtt publish $topic $cmd $cfg(publishQOS) $retain} rc]} {
                 debug "Publish failed: $topic, $cmd: $rc" red
             } else {
             debug "Published $topic, $cmd!"
@@ -866,7 +876,7 @@ proc loadconfig {} {
     }
     #Int Devices
     mk::view layout cfg.x10 {
-        id name topic state level type model stopic ltopic object varflag loglevel
+        id name topic state level type model stopic ltopic object varflag loglevel retain
     }
 
     if {[catch {hvConfig Geometry} geometry]} {
@@ -965,6 +975,15 @@ proc loadconfig {} {
         mk::loop row cfg.devices {
             mk::set $row loglevel 0
         }        
+        set saveflag 1
+    }
+    if {$cfg(version) < 10} {
+    debug "old version $cfg(version)" red
+        set cfg(version) 10
+        debug "Adding retain" red
+        mk::loop row cfg.x10 {
+            mk::set $row retain 0
+        }       
         set saveflag 1
     }
     
@@ -1660,7 +1679,7 @@ proc cfg_device_add {} {
 }
 
 proc cfg_object_add {} {
-    global mqttname mqtttopic mqttstate mqttid mqttobj x10types objtypes varflag vardbl logrx logtx
+    global mqttname mqtttopic mqttstate mqttid mqttobj x10types objtypes varflag vardbl logrx logtx retain
 
     if {$mqttname eq "" || $mqtttopic eq ""} {
         ttk::messageBox -parent .mqtt.usr -icon error -type ok \
@@ -1712,7 +1731,7 @@ proc cfg_object_add {} {
         }
     }
   
-    mk::row append cfg.x10 id $mqttid name $mqttname topic $mqtttopic state $newstate level $newlevel type $type model $mqttmodel object $mqttobj varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}]
+    mk::row append cfg.x10 id $mqttid name $mqttname topic $mqtttopic state $newstate level $newlevel type $type model $mqttmodel object $mqttobj varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}] retain $retain
 
     .mqtt.f.f3.ni.f.tv insert {} end -values [list $mqttname $mqtttopic $mqttstate $id $type $newlevel] -tags black
     destroy .mqtt.usr
@@ -1720,7 +1739,7 @@ proc cfg_object_add {} {
 }
 
 proc cfg_device_addnew {type} {
-    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid mqttobj mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx
+    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid mqttobj mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx mqttretain retain
 
     set mqttname ""
     set mqtttopic ""
@@ -1738,6 +1757,8 @@ proc cfg_device_addnew {type} {
     set mqttloglevel 0
     set logrx 0
     set logtx 0
+    set mqttretain 0
+    set retain 0
     
     if {$type eq "obj"} {
         cfg_object_adddlg
@@ -1825,11 +1846,11 @@ proc cfg_device_adddlg {} {
 }
 
 proc cfg_object_adddlg {} {
-    global mqttname mqtttopic mqttid mqttobj x10types mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx
+    global mqttname mqtttopic mqttid mqttobj x10types mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx mqttretain retain
 
     set row [mk::select cfg.x10 name $mqttname]
     if {$row ne ""} {
-        lassign [mk::get cfg.x10!$row varflag loglevel] varflag loglevel
+        lassign [mk::get cfg.x10!$row varflag loglevel retain] varflag loglevel mqttretain
         set vardbl [expr {($varflag & 0x02)>>1}]
         set mqttvardbl $vardbl
         set varflag [expr {$varflag & 0x01}]
@@ -1837,6 +1858,7 @@ proc cfg_object_adddlg {} {
         set mqttloglevel $loglevel
         set logtx [expr {($loglevel & 0x02)>>1}]
         set logrx [expr {$loglevel & 0x01}]
+        set retain $mqttretain
     }
 
     ttk::toplevel .mqtt.usr
@@ -1866,7 +1888,7 @@ proc cfg_object_adddlg {} {
     ttk::frame .mqtt.usr.f2
     ttk::checkbutton .mqtt.usr.f2.xb3 -text "Log received messages" -variable logrx
     ttk::checkbutton .mqtt.usr.f2.xb4 -text "Log sent messages" -variable logtx
-
+    ttk::checkbutton .mqtt.usr.f2.xb5 -text "Set Retain flag" -variable retain
     ttk::separator .mqtt.usr.sep
     ttk::frame .mqtt.usr.f
     ttk::button .mqtt.usr.f.b1 -text OK -width 6 -command cfg_object_add -state disabled \
@@ -1893,7 +1915,8 @@ proc cfg_object_adddlg {} {
     grid  x .mqtt.usr.b3  -padx 4 -pady 1 
     grid .mqtt.usr.l2 .mqtt.usr.e2 -padx 4 -pady 1 -sticky we
     grid .mqtt.usr.l1 .mqtt.usr.e1 -padx 4 -pady 1 -sticky we
-    grid .mqtt.usr.f2.xb3 -padx 4 -pady 1
+    grid .mqtt.usr.f2.xb5 -padx 4 -pady 1 -sticky we
+    grid .mqtt.usr.f2.xb3 -padx 4 -pady 1 -sticky we
     grid .mqtt.usr.f2.xb4 -padx 4 -pady 1 -sticky we
     grid       x      .mqtt.usr.f2 -sticky w
     grid .mqtt.usr.sep - -padx 2 -pady {2 0} -sticky we
@@ -2043,7 +2066,7 @@ proc cfg_device_chg {item} {
 }
 
 proc cfg_object_chg {item} {
-    global mqttname mqtttopic mqttstate mqttid mqttmodel mqttobj x10types objtypes mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx
+    global mqttname mqtttopic mqttstate mqttid mqttmodel mqttobj x10types objtypes mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx mqttretain retain
 
     lassign [.mqtt.f.f3.ni.f.tv item $item -values] name topic state c type level
     if {$c eq "None" || $c eq "-"} {
@@ -2073,7 +2096,8 @@ proc cfg_object_chg {item} {
     if {$mqttname eq $name && $mqtttopic eq $topic && $mqttid eq $id \
         && $mqttmodel eq $model \
         && $mqttvarflag eq $varflag && $mqttvardbl eq $vardbl \
-        && $mqttloglevel eq ($logrx | $logtx<<1)} {
+        && $mqttloglevel eq ($logrx | $logtx<<1) \
+        && $mqttretain eq $retain} {
         debug "Nothing changed"
         destroy .mqtt.usr
         cfg_sortlist obj
@@ -2104,7 +2128,7 @@ proc cfg_object_chg {item} {
         set mqttmodel "light"
     }
 
-    mk::set cfg.x10!$row id $mqttid name $mqttname topic $mqtttopic type $type model $mqttmodel object $object varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}]
+    mk::set cfg.x10!$row id $mqttid name $mqttname topic $mqtttopic type $type model $mqttmodel object $object varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}] retain $retain
 
     .mqtt.f.f3.ni.f.tv item $item -values [list $mqttname $mqtttopic $mqttstate $id $type $level] -tags black
     destroy .mqtt.usr
@@ -2557,7 +2581,7 @@ proc init {} {
 # End Configuration section
 
 # Start when HomeVisionXL is ready
-hvEventHook ready init
+hvEventHook connect init
 # Reconfigure when a new schedule is opened
 hvEventHook open init 
 # Gracefully close MQTT session when exiting

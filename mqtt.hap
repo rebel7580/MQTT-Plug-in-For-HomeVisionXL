@@ -1,13 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.49 $
-# $Date: 2018/03/27 16:55:03 $
+# $Revision: 1.51 $
+# $Date: 2018/07/15 18:11:15 $
 
 hvImport debug
 hvImport action
+hvImport -name cnetio netio
+hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.49 2018/03/27 16:55:03 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.51 2018/07/15 18:11:15 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -83,6 +85,8 @@ set updtfp  {
     output  0
 }
 
+set connected 0
+
 package require mqtt 1.0
 package require uuid 1.0.5
 
@@ -119,7 +123,7 @@ proc disconnect {} {
 
 # Read MQTT response
 proc subrecv {topic msg} {
-    global cfg objtypes
+    global cfg objtypes regMqtt
 
     set f [string first / $topic]
     set type [string range $topic 0 $f-1]
@@ -278,6 +282,17 @@ proc subrecv {topic msg} {
             switch $resp \
                 $cfg(pwrPostfix) {
                     set payload [string tolower $msg]
+                    if {[info exists regMqtt] && [dict exists $regMqtt <$device>]} {
+                        if {$payload eq {} || $payload eq "?"} {
+                            set r [cnetio [dict get $regMqtt <$device>] $device]
+                            set r [lsearch -inline -not $r {}]
+                            if {$r ne ""} {
+                                sendMqtt pub stat <$device> pwr [lsearch -inline -not $r {}]
+                            }
+                        } else {
+                            cnetioaction [dict get $regMqtt <$device>] $device $payload
+                        }
+                    }
                     set r [mk::select cfg.x10 -regexp topic $match]
                     foreach row $r {
                         lassign [mk::get cfg.x10!$row id topic state level model object varflag loglevel retain] id dtopic state level model object varflag loglevel retain
@@ -300,7 +315,9 @@ proc subrecv {topic msg} {
                                 } elseif {$payload in {off clear}} {
                                     set val 0
                                 } elseif {$payload in {toggle}} {
-                                    if {0x01 & [hvStateString var $id]} {
+                                    set val[hvStateString var $id]
+                                    if {$val eq ""} {return}
+                                    if {0x01 & $val} {
                                         set val 0
                         } else {
                                         set val 1
@@ -354,6 +371,7 @@ proc subrecv {topic msg} {
                                     }
                                 }
                                 debug "id:$id,object:$object;newstate:$state;newlevel:$newlevel" red
+                                if {$cmd eq ""} {return}
                                 mk::set cfg.x10!$row state $newstate level $newlevel
                                 sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
                                 action $object [dict get $objtypes $object $payload] $id
@@ -361,8 +379,9 @@ proc subrecv {topic msg} {
                         } elseif {[string first "cycle" $payload] != -1} {
                             if {$object eq "var" && !($varflag & 0x01)} {  
                                 set val [hvStateString var $id]
+                                set msb [hvObjectState var [expr {$id+1}]]
+                                if {$val eq "" || $msb eq ""} {return}
                                 if {$varflag & 0x02} {
-                                    set msb [hvObjectState var [expr {$id+1}]]
                                     if {$val == 255} {
                                         set cmd [expr {($msb+1)*256}]
                                         mk::set cfg.x10!$row level $cmd
@@ -733,7 +752,7 @@ proc sendMqtt {action pre topic post cmd args} {
     }
 }
 
-#! Write NetIO status information to log file
+#! Write MQTT status information to log file
 proc mqttlog {str} {
     global loghandle mqttlogdate cfg txtext
 
@@ -746,7 +765,8 @@ proc mqttlog {str} {
         }
         if {[catch {file mkdir $cfg(logpath)}]} {
             set cfg(logging) 0
-            error "Failed to access MQTT log directory"
+            debug "Failed to access MQTT log directory" red
+            return
         }
         set file [file join $cfg(logpath) MQTTLog$date$txtext]
         if {[file exists $file]} {
@@ -758,7 +778,8 @@ proc mqttlog {str} {
         if {[catch {open $file a} loghandle]} {
             unset loghandle
             set cfg(logging) 0
-            error "Failed to open MQTT log file"
+            debug "Failed to open MQTT log file" red
+            return
         }
         set mqttlogdate $date
     }
@@ -770,6 +791,35 @@ proc mqttlog {str} {
 # End MQTT Section
 
 # Start Trigger section
+
+# mqttcomm is called by other plugins to communicate with MQTT.
+# Example: mqtt {type} {action} {topic} {payload}
+# "type" is the name calling plugin's id.
+# "action" is "sub" - subscribe this topic
+#             "unsub" - unsubscribe this topic
+#             "stat" - report status for topic/payload
+# "topic" should be enclosed in "<>" to use MQTT's
+#         standard pre- and post-fixes
+hvPublic mqttcomm
+proc mqttcomm {args} {
+    global cfg regMqtt mymqtt
+
+    debug "mqtt: $args" red
+    if {![info exists mymqtt]} {return ""}
+    set state [lassign $args type action topic ]
+    if {$type eq "" || $action eq "" || $topic eq ""} {return ""}
+    if {$action eq "sub"} {
+        dict set regMqtt $topic $type
+        sendMqtt sub cmnd $topic pwr subrecv
+    } elseif {$action eq "unsub"} {
+        dict unset regMqtt $topic
+        sendMqtt unsub cmnd $topic pwr subrecv
+    } elseif {$action eq "stat"} {
+        if {$state eq ""} {return 0}
+        sendMqtt pub stat $topic pwr [join $state]
+    }
+    return 1
+}
 
 # netioaction is called by NetIO "netioaction" command.
 # Example: sends: netioaction mqtt name [0|off|1|on|2|toggle]
@@ -2560,10 +2610,24 @@ proc init {} {
 
     loadconfig
     connect
+    cinit
+    hvTrigger $cfg(serPre) [list mqttserial]
+}
+
+proc cinit {} {
+    global connected
+    
+    after cancel cinit
+    if {!$connected} {
+        after 2000 cinit
+        debug "Not Connected to Controller, waiting" red
+        return
+    }
+    
+    debug "Connected to Controller!" red
+
     subscribe
     devupdate
-
-    hvTrigger $cfg(serPre) [list mqttserial]
 
     #force updates
     foreach object {x10 light flag hvac var analog input output} {
@@ -2578,11 +2642,21 @@ proc init {} {
     }
 }
 
+proc discinit {} {
+    global connected
+
+    Debug "Disconnected from Controller!" red
+    set connected 0
+    subscribe unsub
+    cinit
+}
+
 # End Configuration section
 
 # Start when HomeVisionXL is ready
-hvEventHook connect init
+hvEventHook connect [list set connected 1]
+hvEventHook disconnect discinit
 # Reconfigure when a new schedule is opened
-hvEventHook open init 
+hvEventHook ready init 
 # Gracefully close MQTT session when exiting
 hvEventHook exit disconnect

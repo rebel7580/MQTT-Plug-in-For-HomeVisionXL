@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.51 $
-# $Date: 2018/07/15 18:11:15 $
+# $Revision: 1.54 $
+# $Date: 2018/10/14 20:02:05 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.51 2018/07/15 18:11:15 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.54 2018/10/14 20:02:05 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -86,6 +86,7 @@ set updtfp  {
 }
 
 set connected 0
+set mymqtt ""
 
 package require mqtt 1.0
 package require uuid 1.0.5
@@ -99,8 +100,8 @@ mqtt log {str} {
 
 proc connect {} {
     global mymqtt cfg
-
-    if {[info exists mymqtt]} {
+debug "connect" red
+    if {[info exists mymqtt] && $mymqtt ne ""} {
         $mymqtt destroy
     }
     if {$cfg(userpass) && $cfg(username) ne "" && $cfg(password) ne ""} {
@@ -115,7 +116,7 @@ proc disconnect {} {
     global mymqtt
     
     debug "BYE!" red
-    if {[info exists mymqtt]} {
+    if {[info exists mymqtt] && $mymqtt ne ""} {
         subscribe unsub
         $mymqtt disconnect
     }
@@ -284,10 +285,10 @@ proc subrecv {topic msg} {
                     set payload [string tolower $msg]
                     if {[info exists regMqtt] && [dict exists $regMqtt <$device>]} {
                         if {$payload eq {} || $payload eq "?"} {
-                            set r [cnetio [dict get $regMqtt <$device>] $device]
+                            set r [cnetio [dict get $regMqtt <$device>] status $device]
                             set r [lsearch -inline -not $r {}]
                             if {$r ne ""} {
-                                sendMqtt pub stat <$device> pwr [lsearch -inline -not $r {}]
+                                sendMqtt pub stat <$device> pwr [string toupper [lsearch -inline -not $r {}]]
                             }
                         } else {
                             cnetioaction [dict get $regMqtt <$device>] $device $payload
@@ -722,6 +723,7 @@ proc createCmd {cmd} {
 proc sendMqtt {action pre topic post cmd args} {
     global cfg mymqtt
 
+    if {![info exists mymqtt] || $mymqtt eq ""} {return}
     lassign $args log retain
     if {$log eq "" } {set log 0}
     if {$retain eq ""} {set retain 0}
@@ -793,7 +795,7 @@ proc mqttlog {str} {
 # Start Trigger section
 
 # mqttcomm is called by other plugins to communicate with MQTT.
-# Example: mqtt {type} {action} {topic} {payload}
+# Example: mqttcomm {type} {action} {topic} {payload}
 # "type" is the name calling plugin's id.
 # "action" is "sub" - subscribe this topic
 #             "unsub" - unsubscribe this topic
@@ -805,9 +807,9 @@ proc mqttcomm {args} {
     global cfg regMqtt mymqtt
 
     debug "mqtt: $args" red
-    if {![info exists mymqtt]} {return ""}
+    if {![info exists mymqtt] || $mymqtt eq ""} {return ""}
     set state [lassign $args type action topic ]
-    if {$type eq "" || $action eq "" || $topic eq ""} {return ""}
+    if {$type eq "" || $action eq "" || $topic eq ""} {return "0"}
     if {$action eq "sub"} {
         dict set regMqtt $topic $type
         sendMqtt sub cmnd $topic pwr subrecv
@@ -817,7 +819,11 @@ proc mqttcomm {args} {
     } elseif {$action eq "stat"} {
         if {$state eq ""} {return 0}
         sendMqtt pub stat $topic pwr [join $state]
+    } elseif {$action in {cmnd pub}} {
+        if {$state eq ""} {return 0}
+        sendMqtt pub cmnd $topic pwr [join $state]
     }
+
     return 1
 }
 
@@ -847,7 +853,7 @@ proc netioaction {args} {
 hvPublic netio
 proc netio {args} {
     global cfg
-    
+debug "netio:$args" blue
     lassign $args type name
     if {$type ne $cfg(netioType)} {return ""}
     
@@ -2645,7 +2651,7 @@ proc cinit {} {
 proc discinit {} {
     global connected
 
-    Debug "Disconnected from Controller!" red
+    debug "Disconnected from Controller!" red
     set connected 0
     subscribe unsub
     cinit

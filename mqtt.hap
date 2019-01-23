@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.58 $
-# $Date: 2019/01/22 01:43:56 $
+# $Revision: 1.59 $
+# $Date: 2019/01/23 05:16:20 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.58 2019/01/22 01:43:56 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.59 2019/01/23 05:16:20 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -742,7 +742,10 @@ proc sendMqtt {action pre topic post cmd args} {
     if {$log eq "" } {set log 0}
     if {$retain eq ""} {set retain 0}
     set npre [expr {[info exists cfg(${pre}Prefix)]?$cfg(${pre}Prefix):$pre}]/
-    set npost /[expr {[info exists cfg(${post}Postfix)]?$cfg(${post}Postfix):$post}]\\2
+    set npost /[expr {[info exists cfg(${post}Postfix)]?$cfg(${post}Postfix):$post}]
+    if {$npost ne "/LWT"} {
+        append npost "\\2"
+    }
     regsub {^<} $topic $npre topic
     regsub {(>)([1-9]?)$} $topic $npost topic
 
@@ -917,7 +920,6 @@ proc mqttserial {data} {
     } elseif {$name eq ""} {
         return -1
     } else {
-    debug "Name:$name; State:$state" red
         sendCmd $name [createCmd $state]
         return [string length $match]
     }
@@ -1659,7 +1661,7 @@ proc cfg_rtclksetto {obj} {
 }
 
 proc cfg_validate_cmnd {str} {
-debug "valcmnd:$str" red
+    global mqtttopic mqttcmnd
     if {[string length $str] >= 1} {
         if {[regexp {^\w+$} $str]} {
             .mqtt.usr.l4 state disabled
@@ -1670,6 +1672,7 @@ debug "valcmnd:$str" red
             .mqtt.usr.cb6 state disabled
             .mqtt.usr.f1.xb1 state disabled
             .mqtt.usr.f1.xb2 state disabled
+            cfg_validate $mqtttopic topic mqttname
             return 1
         }
     } elseif {[string length $str] == 0} {
@@ -1681,6 +1684,8 @@ debug "valcmnd:$str" red
         .mqtt.usr.cb6 state !disabled
         .mqtt.usr.f1.xb1 state !disabled
         .mqtt.usr.f1.xb2 state !disabled
+        set mqttcmnd ""
+        cfg_validate $mqtttopic topic mqttname
         return 1
     }
     return 0
@@ -1738,10 +1743,11 @@ proc cfg_validate_slash {str} {
 }
 
 proc cfg_validate_hash {str} {
+    global mqttcmnd
     set idx [string first {#} $str]
     if {$idx == -1} {return 1}
-    return 0
-    # hash not allow, rest is dead code for now
+    # hash only allowed when cmnd is set
+    if {[string length $mqttcmnd] < 1 || ![regexp {^\w+$} $mqttcmnd]} {return 0}
     set sl [string length $str]
     if {$sl == 1} {return 1}
     if {$sl == $idx+1 && $sl > 2 && [string index $str $idx-1] eq "/"} {return 1}
@@ -1750,10 +1756,11 @@ proc cfg_validate_hash {str} {
 }
 
 proc cfg_validate_plus {str} {
+    global mqttcmnd    
     set idx [regexp -all -inline -indices {\+} $str]
     if {$idx eq ""} {return 1}
-    return 0
-    # + not allow, rest is dead code for now
+    # + only allowed when cmnd is set
+    if {[string length $mqttcmnd] < 1 || ![regexp {^\w+$} $mqttcmnd]} {return 0}
     set sl [string length $str]
     set pass 1
     foreach i $idx {
@@ -2159,9 +2166,9 @@ proc cfg_device_chg {item} {
     global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttcmnd cmnd mqttlwt lwt mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx
 
     lassign [.mqtt.f.f1.ni.f.tv item $item -values] name topic state c macro
-    set row [mk::select cfg.devices -exact name $mqttname]
+    set row [mk::select cfg.devices -exact name $name]
     set cmnd [mk::get cfg.devices!$row cmnd]
-
+debug "$name,$mqttname;$cmnd" blue
     if {$c eq "-"} {
         set flag 512
     } else {
@@ -2215,6 +2222,11 @@ proc cfg_device_chg {item} {
     }
     set macro [expr {$mqttmacro_on < 256?$mqttmacro_on:"-"}]/[expr {$mqttmacro_off < 256?$mqttmacro_off:"-"}]
 
+    if {$cmnd eq ""} {
+        set cmnd "subrecv"
+    } else {
+        set cmnd Custom_$cmnd
+    }
     if {[regexp {^<.+>[1-9]?$} $topic] && ($lwt && ($lwt ne $mqttlwt || $cmnd ne $mqttcmnd || $topic ne $mqtttopic))} {
         # lwt changed to off and/or topic or callback changed, only for standard topics
         sendMqtt unsub tele $topic LWT $cmnd
@@ -2316,17 +2328,21 @@ proc cfg_device_del {type} {
     }
     set name [$win set [$win selection] name]
     set row [mk::select cfg.$type -exact name $name]
-    lassign [mk::get cfg.$type!$row topic cmnd] topic cmnd
+    lassign [mk::get cfg.$type!$row topic cmnd lwt] topic cmnd lwt
     if {$type eq "x10"} {
         sendMqtt unsub cmnd $topic pwr subrecv
     } else {
         if {$cmnd eq ""} {
                 set cmnd "subrecv"
         } else {
-            set cmnd $cmnd
+            set cmnd Custom_$cmnd
         }
-        sendMqtt unsub tele $topic LWT $cmnd
-        sendMqtt unsub stat $topic pwr $cmnd
+        if {$lwt && [regexp {^<.+>[1-9]?$} $topic]} {
+            sendMqtt unsub tele $topic LWT $cmnd
+        }
+        if {[regexp {^.+>[1-9]?$} $topic]} {
+            sendMqtt unsub stat $topic pwr $cmnd
+        }
         sendMqtt unsub stat $topic rst $cmnd
     }
     mk::row delete cfg.$type!$row

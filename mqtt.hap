@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.59 $
-# $Date: 2019/01/23 05:16:20 $
+# $Revision: 1.61 $
+# $Date: 2019/11/01 04:42:10 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.59 2019/01/23 05:16:20 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.61 2019/11/01 04:42:10 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -49,6 +49,8 @@ array set cfg {
     listWidths  {0 0 0}
     logging      0
     logpath      ""
+    appResponseType   1
+    otherResponseType 1
 }
 set cfg(txtext) [expr {$tcl_platform(platform) eq "windows" ? ".txt" : ""}]
 
@@ -358,24 +360,19 @@ proc subrecv {topic msg} {
                                         set tmppay [string map -nocase {On off Off on} $state]
                                     }
                                     if {$tmppay eq "off"} {
-                                        set cmd "OFF"
                                         set newstate "Off"
                                         set newlevel 0
                                     } elseif {$tmppay eq "on"} {
-                                        if {$model eq "app"} {
-                                            set cmd "ON"
-                                        } else {
-                                            set cmd "ON 100"
-                                        }
                                         set newlevel 100
                                         set newstate "On"
                                     }
+                                    set cmd [setCmd $tmppay 100 $model]
                                 }
                                 debug "id:$id,object:$object;newstate:$state;newlevel:$newlevel" red
                                 if {$cmd eq ""} {return}
                                 mk::set cfg.x10!$row state $newstate level $newlevel
                                 sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
-                                action $object [dict get $objtypes $object $payload] $id
+                                action $object {*}[concat [dict get $objtypes $object $payload] $id]
                             }
                         } elseif {[string first "cycle" $payload] != -1} {
                             if {$object eq "var" && !($varflag & 0x01)} {  
@@ -426,9 +423,11 @@ proc subrecv {topic msg} {
                                     app {
                                         set arg ""
                                         set level "on"
+                                            set val 100
                                     }
                                     light {
                                         set arg [expr {round([hvLightConfigure maxlevel] * $val / 100)}]
+                                            lappend arg 0
                                         set level "level"
                                     }
                                     default {
@@ -436,13 +435,9 @@ proc subrecv {topic msg} {
                                         set level "level"
                         }
                     }
-                                    if {$model eq "app"} {
-                                        set cmd "ON"
-                                        mk::set cfg.x10!$row state "On" level 100
-                                    } else {
-                                        set cmd "ON $val"
+                                    set cmd [setCmd "on" $val $model]
                                         mk::set cfg.x10!$row state "On" level $val
-                                    }
+                                    
                                     sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
                                 action $object {*}[concat $level $id $arg]
                                 action $object update
@@ -607,19 +602,47 @@ proc getStatus {row} {
         set cmd $newstate
         set newlevel "-"
     } elseif {$object in {x10 light}} {        
-                if {[string tolower $newstate] eq "off"} {
+        set cmd [setCmd $newstate $newlevel $model]
+    }
+    return [dict create cmd $cmd newstate $newstate newlevel $newlevel newsetp $newsetp]
+}
+
+#  "app"  {0/2 {"on" 100      "off" 0} 1/3 {"on" "ON"        "off" "OFF"}} 
+#  other  {0/1 {"on" "$level" "off" 0} 2/3 {"on" "ON $level" "off" "OFF"}} 
+proc setCmd {state level model} {
+    global cfg
+
+    if {[string tolower $state] eq "off"} {
+        if {$model eq "app"} {
+            if {$cfg(appResponseType) == 0} {
+                set cmd 0
+            } else {
+                set cmd "OFF"
+            }
+        } else {
+            if {$cfg(appResponseType) == 0} {
+                set cmd 0
+            } else {
                     set cmd "OFF"
-                } elseif {[string tolower $newstate] eq "on"} {
+            }
+        }
+    } elseif {[string tolower $state] eq "on"} {
                     if {$model eq "app"} {
+            if {$cfg(otherResponseType) == 0} {
+                set cmd 100
+            } else {
                         set cmd "ON"
+            }
+        } else {
+            if {$cfg(otherResponseType) == 0} {
+                set cmd $level
                     } else {
-                        set cmd "ON $newlevel"
+                set cmd "ON $level"
+            }
                     }
                 } else {
                     set cmd "Unknown"
                 }
-    }  
-    return [dict create cmd $cmd newstate $newstate newlevel $newlevel newsetp $newsetp]
 }
 
 proc devupdate {} {
@@ -772,6 +795,7 @@ proc sendMqtt {action pre topic post cmd args} {
 }
 
 #! Write MQTT status information to log file
+hvPublic mqttlog
 proc mqttlog {str} {
     global loghandle mqttlogdate cfg
 
@@ -1324,6 +1348,15 @@ proc cfg_mqtt {} {
     ttk::label .mqtt.f.f2.l23 -text "Subscribe QOS:" -anchor e
     ttk::spinbox .mqtt.f.f2.e23 -width 3 -justify center -values {0 1 2} -textvariable cfg(subscribeQOS)
  
+    ttk::label .mqtt.f.f2.l41 -text "Response uses \"OFF/ON\":" -anchor e
+    ttk::label .mqtt.f.f2.l42 -text "Response uses \"0-100\":"  -anchor e
+    ttk::label .mqtt.f.f2.l43 -text "Appliance Module" -anchor n
+    ttk::label .mqtt.f.f2.l44 -text "All Others"       -anchor n
+    ttk::radiobutton .mqtt.f.f2.r41 -variable cfg(appResponseType)   -value "1"
+    ttk::radiobutton .mqtt.f.f2.r42 -variable cfg(appResponseType)   -value "0"
+    ttk::radiobutton .mqtt.f.f2.r43 -variable cfg(otherResponseType) -value "1"
+    ttk::radiobutton .mqtt.f.f2.r44 -variable cfg(otherResponseType) -value "0"
+
     ttk::checkbutton .mqtt.f.f2.c14 -text "Use Username/Password" -variable cfg(userpass) -command cfg_userpass
     ttk::label .mqtt.f.f2.l15 -text "Username:" -anchor e
     ttk::entry .mqtt.f.f2.e15 -width 25 -justify center -textvariable cfg(username)
@@ -1365,6 +1398,12 @@ proc cfg_mqtt {} {
     grid configure .mqtt.f.f2.l22     -sticky nes -padx 3
     grid .mqtt.f.f2.l23 .mqtt.f.f2.e23 -sticky nws -padx 3
     grid configure .mqtt.f.f2.l23     -sticky nes -padx 3
+
+    grid x .mqtt.f.f2.l43 .mqtt.f.f2.l44 -sticky n -padx 3
+    grid .mqtt.f.f2.l41 .mqtt.f.f2.r41 .mqtt.f.f2.r43 -sticky n
+    grid configure .mqtt.f.f2.l41 -sticky nes -padx 3
+    grid .mqtt.f.f2.l42 .mqtt.f.f2.r42 .mqtt.f.f2.r44 -sticky n 
+    grid configure .mqtt.f.f2.l42 -sticky nes -padx 3
 
     grid x .mqtt.f.f2.c14  -sticky nws -padx 3    
     grid .mqtt.f.f2.l15 .mqtt.f.f2.e15 -sticky nws -padx 3

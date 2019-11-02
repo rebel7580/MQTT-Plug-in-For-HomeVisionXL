@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.61 $
-# $Date: 2019/11/01 04:42:10 $
+# $Revision: 1.62 $
+# $Date: 2019/11/02 01:34:47 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.61 2019/11/01 04:42:10 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.62 2019/11/02 01:34:47 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -620,7 +620,7 @@ proc setCmd {state level model} {
                 set cmd "OFF"
             }
         } else {
-            if {$cfg(appResponseType) == 0} {
+            if {$cfg(otherResponseType) == 0} {
                 set cmd 0
             } else {
                     set cmd "OFF"
@@ -628,7 +628,7 @@ proc setCmd {state level model} {
         }
     } elseif {[string tolower $state] eq "on"} {
                     if {$model eq "app"} {
-            if {$cfg(otherResponseType) == 0} {
+            if {$cfg(appResponseType) == 0} {
                 set cmd 100
             } else {
                         set cmd "ON"

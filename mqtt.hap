@@ -1,18 +1,19 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.63 $
-# $Date: 2020/01/17 18:31:59 $
+# $Revision: 1.69 $
+# $Date: 2020/05/30 03:19:21 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.63 2020/01/17 18:31:59 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.69 2020/05/30 03:19:21 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
+set dir [file dirname [info script]]
 set cfgfileroot [file tail [file rootnam [info script]]]
 
 array set cfg {
@@ -35,6 +36,7 @@ array set cfg {
     pwrPostfix "POWER"
     rstPostfix "RESULT"
     LWTPostfix "LWT"
+    cycleTxt   ""
     publishQOS 1
     subscribeQOS 2
     x10Enable  1
@@ -89,6 +91,7 @@ set updtfp  {
 
 set connected 0
 set mymqtt ""
+set logsuspend 0
 
 package require mqtt 1.0
 package require uuid 1.0.5
@@ -154,7 +157,7 @@ proc subrecv {topic msg} {
                     debug "$resp: payload:$payload;" red
                     set row [mk::select cfg.devices -regexp topic $match]
             if {$row ne ""} {
-                        lassign [mk::get cfg.devices!$row flag macro_on macro_off varflag loglevel] id macro_on macro_off varflag loglevel
+                        lassign [mk::get cfg.devices!$row flag macro_on macro_off varflag loglevel cmdtrig] id macro_on macro_off varflag loglevel cmdtrig
                         if {$loglevel & 0x01} {
                             mqttlog "rx: $topic $msg"
                         }
@@ -162,6 +165,7 @@ proc subrecv {topic msg} {
                     debug "No payload: $topic: $msg" red
                         } elseif {$payload eq "on"} {
                     mk::set cfg.devices!$row state "On" status 0
+                            if {[triggers $row $topic $msg "on" 100] == 2} {return}
                             if {$id ne "" && $id < 512} {
                                 if {$id < 256} {
                                     action flag set $id
@@ -176,6 +180,7 @@ proc subrecv {topic msg} {
                     }
                         } elseif {$payload eq "off"} {
                     mk::set cfg.devices!$row state "Off" status 0
+                            if {[triggers $row $topic $msg "off" 0] == 2} {return}
                             if {$id ne "" && $id < 512} {
                                 if {$id < 256} {
                                     action flag clear $id
@@ -188,8 +193,8 @@ proc subrecv {topic msg} {
                             if {$macro_off ne "" && $macro_off < 256 && $varflag & 0x01} {
                                 action macro run $macro_off
                     }
-                        } elseif {[string first "cycle" $payload] != -1} {
-                            mk::set cfg.devices!$row state "Cyc" status 0
+                        } elseif {[string first $cfg(cycleTxt) $msg] != -1} {
+                            mk::set cfg.devices!$row state [string range $cfg(cycleTxt) 0 2 ] status 0
                             if {$id ne "" && $id < 512} {
                             debug "id:$id;v:$varflag" darkred
                                 if {$id > 255 && !($varflag & 0x01)} {
@@ -214,6 +219,7 @@ proc subrecv {topic msg} {
                                 if {$st ne "on"} {set val $st}
                                 set val [expr {0xffff & int($val)}]
                                 mk::set cfg.devices!$row state $val status 0
+                                if {[triggers $row $topic $msg "on" $val] == 2} {return}
                             if {$id ne "" && $id < 512} {
                                 if {$id < 256} {
                                         if {[expr {0x01 & $val}]} {
@@ -374,7 +380,7 @@ proc subrecv {topic msg} {
                                 sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
                                 action $object {*}[concat [dict get $objtypes $object $payload] $id]
                             }
-                        } elseif {[string first "cycle" $payload] != -1} {
+                        } elseif {[string first $cfg(cycleTxt) $msg] != -1} {
                             if {$object eq "var" && !($varflag & 0x01)} {  
                                 set val [hvStateString var $id]
                                 set msb [hvObjectState var [expr {$id+1}]]
@@ -543,6 +549,7 @@ proc levelpercent {model arg} {
     }
 }  
 
+# MQTT response for homevision topic
 proc hvrecv {topic resp msg} {
     global objtypes
 
@@ -565,6 +572,56 @@ proc hvrecv {topic resp msg} {
         lassign [mk::get cfg.x10!$row topic loglevel retain] otopic loglevel retain
         sendMqtt pub stat $otopic pwr [dict get $objstat cmd] [expr {($loglevel & 0x02)>>1}] $retain
     }
+}
+
+# MQTT response for custom triggered topics (standard triggered topics use subrecv)
+proc trigrecv {topic msg} {
+
+    debug "Trig Recv'd: $topic, $msg" red
+    set row [mk::select cfg.devices -regexp topic $topic]
+    if {$row ne ""} {
+        triggers $row $topic $msg "" 0
+    }
+}
+
+proc triggers {row topic msg state lvl} {
+     
+    lassign [mk::get cfg.devices!$row cmdtrig allonoff trigon trigoff trigstdcus] cmdtrig allonoff trigon trigoff trigstdcus
+#    debug "triggers: $row,$state,$lvl;$cmdtrig,$allonoff,$trigstdcus,$trigon,$trigoff" red
+    if {$cmdtrig != 2} {return $cmdtrig}
+    set secs [clock seconds]
+    set time [clock format $secs -format {%T}]
+    set date [clock format $secs -format {%Y%m%d}]
+    if {$trigstdcus == 0} {
+        if {($allonoff == 0 || ($allonoff == 1 && $state == "on" && $lvl != 0)) \
+             && $trigon ne ""} {
+            set cmd $trigon
+            debug "Triggering on:$cmd" darkgreen
+        } elseif {$allonoff == 1 && ($state == "off" || ($state == "on" && $lvl == 0)) \
+             && $trigoff ne ""} {
+            set cmd $trigoff
+            debug "Triggering off:$cmd" darkgreen
+        } else {
+            return $cmdtrig
+        }
+    } elseif {$trigon ne ""} {
+        set cmd $trigon
+        debug "Triggering Custom:$cmd" darkgreen
+    } else {
+        return $cmdtrig
+    }
+    set cmd [string map [list \
+             %O $topic \
+             %M $msg \
+             %L $lvl \
+             %X [expr {round(floor(16 * $lvl / 100))}] \
+             %P [expr {round(floor(31 * $lvl / 100))}] \
+             %E [expr {round(floor(63 * $lvl / 100))}] \
+             %T $time \
+             %D $date \
+             ] $cmd]
+    hvExecTrigger $cmd
+    return $cmdtrig
 }
 
 proc getStatus {row} {
@@ -682,14 +739,9 @@ proc subscribe {{type sub}} {
     global mymqtt
 
     mk::loop row cfg.devices {
-        lassign [mk::get $row topic cmnd lwt] topic cmnd lwt
+        lassign [mk::get $row topic cmnd lwt cmdtrig trigstdcus] topic cmnd lwt cmdtrig trigstdcus
         if {$topic ne ""} {
-            if {$cmnd eq ""} {
-                    set cmnd "subrecv"
-            } else {
-                hvImport -name Custom_$cmnd $cmnd
-                set cmnd Custom_$cmnd
-            }
+            set cmnd [customCmnd $cmnd $cmdtrig $trigstdcus]
             if {$lwt && [regexp {^<.+>[1-9]?$} $topic]} {
                 # subscribe to lwt only if standard topic and lwt flag set
                 sendMqtt $type tele $topic LWT $cmnd
@@ -708,6 +760,18 @@ proc subscribe {{type sub}} {
         }
     }
     sendMqtt sub cmnd "<homevision/#" "" subrecv
+}
+
+proc customCmnd {cmnd cmdtrig trigstdcus} {
+
+    if {$cmnd ne "" && $cmdtrig == 1} {
+        hvImport -name Custom_$cmnd $cmnd
+        return Custom_$cmnd
+    } elseif {$cmnd ne "" && $cmdtrig == 2 && $trigstdcus == 1} {
+        return "trigrecv"
+    } else {
+        return "subrecv"
+    }
 }
 
 # Send command
@@ -796,39 +860,72 @@ proc sendMqtt {action pre topic post cmd args} {
 
 #! Write MQTT status information to log file
 hvPublic mqttlog
-proc mqttlog {str} {
-    global loghandle mqttlogdate cfg
+proc mqttlog {str {color red}} {
+    global loghandle mqttlogdate cfg logsuspend dir
 
-    if {!$cfg(logging)} return
+    if {!$cfg(logging) || $logsuspend == 2} return
     set time [clock seconds]
     set date [clock format $time -format %y%m%d]
     if {![info exists loghandle] || $date ne $mqttlogdate} {
         if {[info exists loghandle]} {
             catch {close $loghandle}
         }
-        if {[catch {file mkdir $cfg(logpath)}]} {
-            set cfg(logging) 0
-            debug "Failed to access MQTT log directory" red
-            return
-        }
-        set file [file join $cfg(logpath) MQTTLog$date$cfg(txtext)]
-        if {[file exists $file]} {
-            set mod [file mtime $file]
-            if {$time - $mod > 86400} {
-                file delete $file
+        set t 0
+        foreach logpath [list $cfg(logpath) [file join $dir log]] {
+            if {[catch {file mkdir $logpath}]} {
+                debug "Failed to access MQTT log directory,$logpath" red
+                incr t
+                continue
             }
+            set file [file join $logpath MQTTLog$date$cfg(txtext)]
+            if {[catch {open $file a} loghandle]} {
+                unset loghandle
+                debug "Failed to open MQTT log file,$file" red
+                incr t
+                continue
         }
-        if {[catch {open $file a} loghandle]} {
-            unset loghandle
-            set cfg(logging) 0
-            debug "Failed to open MQTT log file" red
-            return
+            set mqttlogdate $date
+            break
+            }
+        set logsuspend $t
+        if {$t >= 2} {
+            debug "Suspend logging for 5 mins" red
+            after 300000 restorelogging
+            return 0
         }
+    } elseif {[info exists loghandle] && $logsuspend == 1} {
+        #retry orig logpath
+        set logpath $cfg(logpath)
+        if {[catch {file mkdir $logpath}]} {
+            # Failed orig logpath, keep alternate
+        } else {
+            # Found orig, try a file
+            set file [file join $logpath MQTTLog$date$cfg(txtext)]
+            if {[catch {open $file a} lh]} {
+                # Failed orig log file, keep alternate
+                unset lh
+                debug "Failed to open MQTT log file,$file" red
+            } else {
+                debug "Reopened original log file,$file" blue
+                if {[info exists loghandle]} {
+                    catch {close $loghandle}
+        }
+                set loghandle $lh
+                set logsuspend 0
         set mqttlogdate $date
     }
-    debug $str red
-    puts -nonewline $loghandle "[clock format $time -format "%d.%m.%Y %H.%M.%S"]\t$str\n"
+        }
+    }
+    debug $str $color
+    catch {puts -nonewline $loghandle "[clock format $time -format "%d.%m.%Y %H.%M.%S"]\t$str\n"}
     catch {flush $loghandle}
+    return 1
+}
+
+proc restorelogging {} {
+    global logsuspend
+    #after timeout, try again to log next time.
+    set logsuspend 0
 }
 
 # End MQTT Section
@@ -975,7 +1072,7 @@ proc loadconfig {} {
     }
     # Ext Devices
     mk::view layout cfg.devices {
-        name topic state status flag macro_on macro_off stopic ltopic varflag loglevel cmnd lwt
+        name topic state status flag macro_on macro_off stopic ltopic varflag loglevel cmnd lwt trigon trigoff cmdtrig allonoff trigstdcus
     }
     #Int Devices
     mk::view layout cfg.x10 {
@@ -1113,6 +1210,24 @@ proc loadconfig {} {
         }
         set saveflag 1
     }
+    if {$cfg(version) < 13} {
+    debug "old version $cfg(version)" red
+        set cfg(version) 13
+        debug "Adding Triggers" red
+        mk::loop row cfg.devices {
+            set cmnd [mk::get $row cmnd]
+            if {$cmnd eq ""} {
+                mk::set $row cmdtrig 0
+            } else {
+                mk::set $row cmdtrig 1
+            }
+            mk::set $row trigstdcus 0
+            mk::set $row allonoff 0
+            mk::set $row trigon ""
+            mk::set $row trigoff ""
+        }
+        set saveflag 1
+    }
     debug "New version $cfg(version)" green
 
     # set any missing cfg items into cfg.main
@@ -1150,6 +1265,7 @@ proc saveconfig {{top ""}} {
     }
     set bkup mqtt-[pid].$$$
     set rc [catch {hvConfigFile create $bkup w} f]
+#    debug "save:$rc;" red
     if {$rc == 0} {
         mk::file save cfg $f
         close $f
@@ -1336,6 +1452,8 @@ proc cfg_mqtt {} {
     ttk::entry .mqtt.f.f2.e20 -width 10 -justify center -textvariable cfg(pwrPostfix)
     ttk::label .mqtt.f.f2.l21 -text "LWT Postfix (>):" -anchor e
     ttk::entry .mqtt.f.f2.e21 -width 10 -justify center -textvariable cfg(LWTPostfix)
+    ttk::label .mqtt.f.f2.l24 -text "Count Payload Text:" -anchor e
+    ttk::entry .mqtt.f.f2.e24 -width 10 -justify center -textvariable cfg(cycleTxt)
     ttk::label .mqtt.f.f2.l12 -text "MQTT Broker web/IP Address:" -anchor e
     ttk::entry .mqtt.f.f2.e12 -width 25 -justify center -textvariable cfg(broker)
     
@@ -1389,6 +1507,8 @@ proc cfg_mqtt {} {
     grid configure .mqtt.f.f2.l20     -sticky nes -padx 3
     grid .mqtt.f.f2.l21 .mqtt.f.f2.e21 -sticky nws -padx 3
     grid configure .mqtt.f.f2.l21     -sticky nes -padx 3
+    grid .mqtt.f.f2.l24 .mqtt.f.f2.e24 -sticky nws -padx 3
+    grid configure .mqtt.f.f2.l24     -sticky nes -padx 3
   
     grid .mqtt.f.f2.l12 .mqtt.f.f2.e12 -sticky nws -padx 3
     grid configure .mqtt.f.f2.l12     -sticky nes -padx 3
@@ -1399,18 +1519,18 @@ proc cfg_mqtt {} {
     grid .mqtt.f.f2.l23 .mqtt.f.f2.e23 -sticky nws -padx 3
     grid configure .mqtt.f.f2.l23     -sticky nes -padx 3
 
-    grid x .mqtt.f.f2.l43 .mqtt.f.f2.l44 -sticky n -padx 3
-    grid .mqtt.f.f2.l41 .mqtt.f.f2.r41 .mqtt.f.f2.r43 -sticky n
-    grid configure .mqtt.f.f2.l41 -sticky nes -padx 3
-    grid .mqtt.f.f2.l42 .mqtt.f.f2.r42 .mqtt.f.f2.r44 -sticky n 
-    grid configure .mqtt.f.f2.l42 -sticky nes -padx 3
-
     grid x .mqtt.f.f2.c14  -sticky nws -padx 3    
     grid .mqtt.f.f2.l15 .mqtt.f.f2.e15 -sticky nws -padx 3
     grid configure .mqtt.f.f2.l15     -sticky nes -padx 3
     grid .mqtt.f.f2.l16 .mqtt.f.f2.e16 -sticky nws -padx 3
     grid configure .mqtt.f.f2.l16     -sticky nes -padx 3   
  
+    grid x .mqtt.f.f2.l43 .mqtt.f.f2.l44 -sticky n -padx 3
+    grid .mqtt.f.f2.l41 .mqtt.f.f2.r41 .mqtt.f.f2.r43 -sticky n
+    grid configure .mqtt.f.f2.l41 -sticky nes -padx 3
+    grid .mqtt.f.f2.l42 .mqtt.f.f2.r42 .mqtt.f.f2.r44 -sticky n 
+    grid configure .mqtt.f.f2.l42 -sticky nes -padx 3
+
     grid x .mqtt.f.f2.c31 -sticky nws  -padx 3 -pady 1
     grid .mqtt.f.f2.l31 .mqtt.f.f2.e31 .mqtt.f.f2.b31 -sticky we -padx 3
     grid .mqtt.f.f2.l33 .mqtt.f.f2.e33 -sticky we -padx 3
@@ -1485,8 +1605,18 @@ proc cfg_varflag {type} {
             .mqtt.usr.f1.xl2 state disabled
             set vardbl 0
         } else {
-            .mqtt.usr.f1.xb2 state !disabled
-            .mqtt.usr.f1.xl2 state !disabled
+            if {$type eq "ext"} {
+                cfg_varflag_select
+            } else {
+                cfg_object_varflag_select
+            }
+        }
+    } elseif {$type in {dblext dblobj}} {
+            set varflag 0
+            if {$type eq "dblext"} {
+                cfg_varflag_select
+            } else {
+                cfg_object_varflag_select
         }
     }
     
@@ -1501,8 +1631,12 @@ proc cfg_varflag_select {} {
        if {$mqttid+1 == [hvObjectCount var]} {
            set varlist "(VA-[expr {$mqttid+1}] Not available.)"
            set vardbl 0
+            .mqtt.usr.f1.xb2 state disabled
+            .mqtt.usr.f1.xl2 state disabled
        } else {
             set varlist "(VA-$mqttid, VA-[expr {$mqttid+1}])"
+            .mqtt.usr.f1.xb2 state !disabled
+            .mqtt.usr.f1.xl2 state !disabled
        }
     } else {
        grid remove .mqtt.usr.f1  
@@ -1517,8 +1651,12 @@ proc cfg_object_varflag_select {} {
        if {$mqttid+1 == [hvObjectCount var]} {
            set varlist "(VA-[expr {$mqttid+1}] Not available.)"
            set vardbl 0
+            .mqtt.usr.f1.xb2 state disabled
+            .mqtt.usr.f1.xl2 state disabled
        } else {
             set varlist "(VA-$mqttid, VA-[expr {$mqttid+1}])"
+            .mqtt.usr.f1.xb2 state !disabled
+            .mqtt.usr.f1.xl2 state !disabled
        }
     } else {
         grid remove .mqtt.usr.f1
@@ -1700,31 +1838,16 @@ proc cfg_rtclksetto {obj} {
 }
 
 proc cfg_validate_cmnd {str} {
-    global mqtttopic mqttcmnd
+    global mqtttopic mqttcmnd mqttcmdtrig
+    if {$mqttcmdtrig == 1} {
     if {[string length $str] >= 1} {
         if {[regexp {^\w+$} $str]} {
-            .mqtt.usr.l4 state disabled
-            .mqtt.usr.cb state disabled
-            .mqtt.usr.l5 state disabled
-            .mqtt.usr.cb5 state disabled
-            .mqtt.usr.l6 state disabled
-            .mqtt.usr.cb6 state disabled
-            .mqtt.usr.f1.xb1 state disabled
-            .mqtt.usr.f1.xb2 state disabled
-            cfg_validate $mqtttopic topic mqttname
             return 1
         }
     } elseif {[string length $str] == 0} {
-        .mqtt.usr.l4 state !disabled
-        .mqtt.usr.cb state !disabled
-        .mqtt.usr.l5 state !disabled
-        .mqtt.usr.cb5 state !disabled
-        .mqtt.usr.l6 state !disabled
-        .mqtt.usr.cb6 state !disabled
-        .mqtt.usr.f1.xb1 state !disabled
-        .mqtt.usr.f1.xb2 state !disabled
-        set mqttcmnd ""
-        cfg_validate $mqtttopic topic mqttname
+                    return 1
+        }
+    } else {
         return 1
     }
     return 0
@@ -1821,7 +1944,7 @@ proc cfg_validate_plus {str} {
 }
 
 proc cfg_device_add {} {
-    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid mqttcmnd mqttlwt varflag vardbl logrx logtx
+    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid mqttcmnd mqttlwt varflag vardbl logrx logtx mqtttrigon mqtttrigoff mqttcmdtrig mqttallonoff mqtttrigstdcus
 
     if {$mqttname eq "" || $mqtttopic eq ""} {
         ttk::messageBox -parent .mqtt.usr -icon error -type ok \
@@ -1854,6 +1977,8 @@ proc cfg_device_add {} {
         state $mqttstate status 0 flag $mqttflag \
         macro_on $mqttmacro_on macro_off $mqttmacro_off \
         cmnd $mqttcmnd lwt $mqttlwt \
+        trigon $mqtttrigon trigoff $mqtttrigoff \
+        cmdtrig $mqttcmdtrig allonoff $mqttallonoff \
         varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}]
     
     .mqtt.f.f1.ni.f.tv insert {} end -values [list $mqttname $mqtttopic $mqttstate $flag $macro] -tags black
@@ -1922,7 +2047,7 @@ proc cfg_object_add {} {
 }
 
 proc cfg_device_addnew {type} {
-    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid mqttobj mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx mqttretain retain mqttcmnd cmnd mqttlwt lwt
+    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttid mqttobj mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx mqttretain retain mqttcmnd cmnd mqttlwt lwt mqtttrigon trigon mqtttrigoff trigoff mqttcmdtrig cmdtrig mqttallonoff allonoff mqtttrigstdcus trigstdcus
 
     set mqttname ""
     set mqtttopic ""
@@ -1932,13 +2057,22 @@ proc cfg_device_addnew {type} {
     set mqttmacro_on "256"
     set mqttmacro_off "256"
     set mqttobj ""
-
     set mqttcmnd ""
     set cmnd ""
+    set mqtttrigon ""
+    set trigon ""
+    set mqtttrigoff ""
+    set trigoff ""
+    set mqttcmdtrig 0
+    set cmdtrig 0
+    set mqttallonoff 0
+    set allonoff 0
+    set mqtttrigstdcus 0
+    set trigstdcus 0
     set mqttlwt 0
     set lwt 0
-    set mqttvarflag 1
-    set varflag 1
+    set mqttvarflag 0
+    set varflag 0
     set mqttvardbl 0
     set vardbl 0
     set mqttloglevel 0
@@ -1955,11 +2089,11 @@ proc cfg_device_addnew {type} {
 }
 
 proc cfg_device_adddlg {} {
-    global mqttname mqtttopic mqttvarflag varflag mqttvardbl mqttcmnd cmnd mqttlwt lwt vardbl mqttloglevel logrx logtx
+    global mqttname mqtttopic mqttvarflag varflag mqttvardbl mqttcmnd cmnd mqttlwt lwt vardbl mqttloglevel logrx logtx mqtttrigon trigon mqtttrigoff trigoff mqttcmdtrig cmdtrig mqttallonoff allonoff mqtttrigstdcus trigstdcus
     
     set row [mk::select cfg.devices name $mqttname]
     if {$row ne ""} {
-        lassign [mk::get cfg.devices!$row varflag loglevel cmnd lwt] varflag loglevel cmnd lwt
+        lassign [mk::get cfg.devices!$row varflag loglevel cmnd lwt trigon trigoff cmdtrig allonoff trigstdcus] varflag loglevel cmnd lwt trigon trigoff cmdtrig allonoff trigstdcus
         set vardbl [expr {($varflag & 0x02)>>1}]
         set mqttvardbl $vardbl
         set varflag [expr {$varflag & 0x01}]
@@ -1969,37 +2103,59 @@ proc cfg_device_adddlg {} {
         set logrx [expr {$loglevel & 0x01}]
         set mqttcmnd $cmnd
         set mqttlwt $lwt
+        set mqtttrigon $trigon
+        set mqtttrigoff $trigoff
+        set mqttcmdtrig $cmdtrig
+        set mqttallonoff $allonoff
+        set mqtttrigstdcus $trigstdcus
     }
 
     ttk::toplevel .mqtt.usr
     wm title .mqtt.usr "Configure Device"
     wm transient .mqtt.usr .mqtt
     wm withdraw .mqtt.usr
-    ttk::label .mqtt.usr.l1 -text "Name:" -anchor w
+    set labelwidth 12
+    debug "width: $labelwidth" red
+    ttk::label .mqtt.usr.l1 -text "Name:" -anchor e -width $labelwidth
     ttk::entry .mqtt.usr.e1 -width 20 -textvariable mqttname \
       -validate all -validatecommand "cfg_validate %P name mqtttopic"
-    ttk::label .mqtt.usr.l2 -text "Topic:" -anchor w
+    ttk::label .mqtt.usr.l2 -text "Topic:" -anchor e -width $labelwidth
     ttk::entry .mqtt.usr.e2 -width 40 -textvariable mqtttopic \
       -validate all -validatecommand "cfg_validate %P topic mqttname"
-    ttk::label .mqtt.usr.l4 -text "Flag/Var:" -anchor w
+    ttk::label .mqtt.usr.l4 -text "Flag/Var:" -anchor e -width $labelwidth
     ttk::combobox .mqtt.usr.cb -state readonly -width 28
     bind .mqtt.usr.cb <<ComboboxSelected>> [list cfg_flag_set .mqtt.usr.cb]
     createflaglist .mqtt.usr.cb
     ttk::frame .mqtt.usr.f1
     ttk::checkbutton .mqtt.usr.f1.xb1 -text "Use Variable as flag" -command {cfg_varflag ext} -variable varflag
-    ttk::checkbutton .mqtt.usr.f1.xb2 -text "Use two Variables" -command {cfg_varflag dbl} -variable vardbl
-    ttk::label .mqtt.usr.f1.xl2 -textvariable varlist -anchor w
-    ttk::label .mqtt.usr.l5 -text "On Macro:" -anchor w
+    ttk::checkbutton .mqtt.usr.f1.xb2 -text "Use two Variables" -command {cfg_varflag dblext} -variable vardbl
+    ttk::label .mqtt.usr.f1.xl2 -textvariable varlist -anchor e
+    ttk::label .mqtt.usr.l5 -text "On Macro:" -anchor e -width $labelwidth
     ttk::combobox .mqtt.usr.cb5 -state readonly -width 28
     bind .mqtt.usr.cb5 <<ComboboxSelected>> [list cfg_macro_set .mqtt.usr.cb5 mqttmacro_on]
     createmacrolist .mqtt.usr.cb5 mqttmacro_on
-    ttk::label .mqtt.usr.l6 -text "Off Macro:" -anchor w
+    ttk::label .mqtt.usr.l6 -text "Off Macro:" -anchor e -width $labelwidth
     ttk::combobox .mqtt.usr.cb6 -state readonly -width 28
     bind .mqtt.usr.cb6 <<ComboboxSelected>> [list cfg_macro_set .mqtt.usr.cb6 mqttmacro_off]
     createmacrolist .mqtt.usr.cb6 mqttmacro_off
-    ttk::label .mqtt.usr.l7 -text "Command:" -anchor w
+    ttk::label .mqtt.usr.lr1 -text "Cmd/Trig:" -anchor e -width $labelwidth
+    ttk::frame .mqtt.usr.fr1
+    ttk::radiobutton .mqtt.usr.fr1.r0 -text "None" -value 0 -variable mqttcmdtrig -command cfg_cmdtrig
+    ttk::radiobutton .mqtt.usr.fr1.r1 -text "Command" -value 1 -variable mqttcmdtrig -command cfg_cmdtrig
+    ttk::radiobutton .mqtt.usr.fr1.r2 -text "Trigger" -value 2 -variable mqttcmdtrig -command cfg_cmdtrig
+    ttk::label .mqtt.usr.lr2 -text "Topic Type:" -anchor e -width $labelwidth
+    ttk::frame .mqtt.usr.fr2
+    ttk::radiobutton .mqtt.usr.fr2.r5 -text "Standard: " -value 0 -variable mqtttrigstdcus -command cfg_cmdtrig
+    ttk::radiobutton .mqtt.usr.fr2.r6 -text "Custom" -value 1 -variable mqtttrigstdcus -command cfg_cmdtrig
+    ttk::radiobutton .mqtt.usr.fr2.r3 -text "All" -value 0 -variable mqttallonoff -command cfg_cmdtrig
+    ttk::radiobutton .mqtt.usr.fr2.r4 -text "On/Off" -value 1 -variable mqttallonoff -command cfg_cmdtrig
+    ttk::label .mqtt.usr.l7 -text "Command:" -anchor e -width $labelwidth
     ttk::entry .mqtt.usr.e7 -width 20 -textvariable mqttcmnd \
       -validate all -validatecommand "cfg_validate_cmnd %P"
+    ttk::label .mqtt.usr.l7a -text "Trigger:" -anchor e -width $labelwidth
+    ttk::entry .mqtt.usr.e7a -width 20 -textvariable mqtttrigon
+    ttk::label .mqtt.usr.l8 -text "Off Trigger:" -anchor e -width $labelwidth
+    ttk::entry .mqtt.usr.e8 -width 20 -textvariable mqtttrigoff
     ttk::button .mqtt.usr.b3 -text "Copy Topic to Name"  -command cfg_topic_copy \
         -image [imglist copy] -compound left
     ttk::frame .mqtt.usr.f2
@@ -2023,7 +2179,15 @@ proc cfg_device_adddlg {} {
     grid       x        .mqtt.usr.f1  -sticky w
     grid .mqtt.usr.l5   .mqtt.usr.cb5 -padx 4 -pady 1 -sticky we
     grid .mqtt.usr.l6   .mqtt.usr.cb6 -padx 4 -pady 1 -sticky we
+    grid .mqtt.usr.fr1.r0 .mqtt.usr.fr1.r1 .mqtt.usr.fr1.r2 -sticky w
+    grid .mqtt.usr.fr2.r6 .mqtt.usr.fr2.r5 .mqtt.usr.fr2.r3 .mqtt.usr.fr2.r4 -sticky w
+    grid .mqtt.usr.lr1   .mqtt.usr.fr1
+    grid configure .mqtt.usr.fr1 -column 1 -sticky w
+    grid .mqtt.usr.lr2   .mqtt.usr.fr2
+    grid configure .mqtt.usr.fr2 -column 1 -sticky w
     grid .mqtt.usr.l7   .mqtt.usr.e7 -padx 4 -pady 1 -sticky we
+    grid .mqtt.usr.l7a   .mqtt.usr.e7a -padx 4 -pady 1 -sticky we
+    grid .mqtt.usr.l8   .mqtt.usr.e8 -padx 4 -pady 1 -sticky we
     grid .mqtt.usr.f2.xb5 -padx 4 -pady 1 -sticky we
     grid .mqtt.usr.f2.xb3 -padx 4 -pady 1 -sticky we
     grid .mqtt.usr.f2.xb4 -padx 4 -pady 1 -sticky we
@@ -2036,8 +2200,85 @@ proc cfg_device_adddlg {} {
     center .mqtt.usr .mqtt
     grab .mqtt.usr
     focus .mqtt.usr.e2
+    if {$row eq ""} {
+        .mqtt.usr.e2 insert 0 "<>"
+        .mqtt.usr.e2 icursor 1
+    }
     cfg_varflag_select
     cfg_varflag ext
+    cfg_cmdtrig
+}
+
+proc cfg_cmdtrig {} {
+    global mqttallonoff mqttcmdtrig mqtttrigstdcus
+
+    if {$mqttcmdtrig == 0} {
+        set mqttallonoff 0
+        .mqtt.usr.l4 state !disabled
+        .mqtt.usr.cb state !disabled
+        .mqtt.usr.l5 state !disabled
+        .mqtt.usr.cb5 state !disabled
+        .mqtt.usr.l6 state !disabled
+        .mqtt.usr.cb6 state !disabled
+        .mqtt.usr.f1.xb1 state !disabled
+        .mqtt.usr.f1.xb2 state !disabled
+        .mqtt.usr.f1.xl2 state !disabled
+        .mqtt.usr.fr2.r3 state disabled
+        .mqtt.usr.fr2.r4 state disabled
+        .mqtt.usr.fr2.r5 state disabled
+        .mqtt.usr.fr2.r6 state disabled
+        grid remove .mqtt.usr.l7 .mqtt.usr.e7
+        grid remove .mqtt.usr.l7a .mqtt.usr.e7a
+        grid remove .mqtt.usr.l8 .mqtt.usr.e8
+        cfg_varflag ext
+    } elseif {$mqttcmdtrig == 1} {
+        .mqtt.usr.l4 state disabled
+        .mqtt.usr.cb state disabled
+        .mqtt.usr.l5 state disabled
+        .mqtt.usr.cb5 state disabled
+        .mqtt.usr.l6 state disabled
+        .mqtt.usr.cb6 state disabled
+        .mqtt.usr.f1.xb1 state disabled
+        .mqtt.usr.f1.xb2 state disabled
+        .mqtt.usr.f1.xl2 state disabled
+        .mqtt.usr.l7 configure -text "Command:" 
+        set mqttallonoff 0
+        .mqtt.usr.fr2.r3 state disabled
+        .mqtt.usr.fr2.r4 state disabled
+        .mqtt.usr.fr2.r5 state disabled
+        .mqtt.usr.fr2.r6 state disabled
+        grid .mqtt.usr.l7 .mqtt.usr.e7 -padx 4 -pady 1 -sticky we
+        grid remove .mqtt.usr.l7a .mqtt.usr.e7a
+        grid remove .mqtt.usr.l8 .mqtt.usr.e8
+    } elseif {$mqttcmdtrig == 2} {
+        .mqtt.usr.l4 state disabled
+        .mqtt.usr.cb state disabled
+        .mqtt.usr.l5 state disabled
+        .mqtt.usr.cb5 state disabled
+        .mqtt.usr.l6 state disabled
+        .mqtt.usr.cb6 state disabled
+        .mqtt.usr.f1.xb1 state disabled
+        .mqtt.usr.f1.xb2 state disabled
+        .mqtt.usr.f1.xl2 state disabled
+        grid remove .mqtt.usr.l7 .mqtt.usr.e7
+        grid .mqtt.usr.l7a .mqtt.usr.e7a -padx 4 -pady 1 -sticky we
+        if {$mqttallonoff == 1 && $mqtttrigstdcus == 0} {
+            .mqtt.usr.l7a configure -text "On Trigger:"
+            grid .mqtt.usr.l8 .mqtt.usr.e8 -padx 4 -pady 1 -sticky we
+        } else {
+            .mqtt.usr.l7a configure -text "Trigger:"
+            grid remove .mqtt.usr.l8 .mqtt.usr.e8
+        }
+        if {$mqtttrigstdcus == 0} {
+            .mqtt.usr.fr2.r3 state !disabled
+            .mqtt.usr.fr2.r4 state !disabled
+        } else {
+            .mqtt.usr.fr2.r3 state disabled
+            .mqtt.usr.fr2.r4 state disabled
+        }
+        .mqtt.usr.fr2.r5 state !disabled
+        .mqtt.usr.fr2.r6 state !disabled
+    }
 }
 
 proc cfg_object_adddlg {} {
@@ -2075,7 +2316,7 @@ proc cfg_object_adddlg {} {
     createobjlist .mqtt.usr.cb $mqttobj
     ttk::frame .mqtt.usr.f1
     ttk::checkbutton .mqtt.usr.f1.xb1 -text "Use Variable as flag" -command {cfg_varflag obj} -variable varflag
-    ttk::checkbutton .mqtt.usr.f1.xb2 -text "Use two Variables" -command {cfg_varflag dbl} -variable vardbl
+    ttk::checkbutton .mqtt.usr.f1.xb2 -text "Use two Variables" -command {cfg_varflag dblobj} -variable vardbl
     ttk::label .mqtt.usr.f1.xl2 -textvariable varlist -anchor w
     
     ttk::button .mqtt.usr.b3 -text "Copy Object to Topic, Name"  -command cfg_object_copy \
@@ -2127,13 +2368,18 @@ proc cfg_object_adddlg {} {
 }
 
 proc cfg_device_chgdlg {} {
-    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttvarflag varflag mqttcmnd mqttlwt
+    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttvarflag varflag mqttcmnd mqttlwt mqtttrigon mqtttrigoff mqttcmdtrig mqttallonoff mqtttrigstdcus
 
     set item [lindex [.mqtt.f.f1.ni.f.tv selection] 0]
     lassign [.mqtt.f.f1.ni.f.tv item $item -values] mqttname mqtttopic mqttstate c macro
     set row [mk::select cfg.devices -exact name $mqttname]
     set mqttcmnd [mk::get cfg.devices!$row cmnd]
     set mqttlwt [mk::get cfg.devices!$row lwt]
+    set mqtttrigon [mk::get cfg.devices!$row trigon]
+    set mqtttrigoff [mk::get cfg.devices!$row trigoff]
+    set mqttcmdtrig [mk::get cfg.devices!$row cmdtrig]
+    set mqttallonoff [mk::get cfg.devices!$row allonoff]
+    set mqtttrigstdcus [mk::get cfg.devices!$row trigstdcus]
     if {$c eq "-"} {
         set mqttflag 512
     } else {
@@ -2202,7 +2448,7 @@ proc cfg_object_chgdlg {} {
 }
 
 proc cfg_device_chg {item} {
-    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttcmnd cmnd mqttlwt lwt mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx
+    global mqttname mqtttopic mqttstate mqttflag mqttmacro_on mqttmacro_off mqttcmnd cmnd mqttlwt lwt mqttvarflag varflag mqttvardbl vardbl mqttloglevel logrx logtx mqtttrigon trigon mqtttrigoff trigoff mqttcmdtrig cmdtrig mqttallonoff allonoff mqtttrigstdcus trigstdcus
 
     lassign [.mqtt.f.f1.ni.f.tv item $item -values] name topic state c macro
     set row [mk::select cfg.devices -exact name $name]
@@ -2232,7 +2478,11 @@ debug "$name,$mqttname;$cmnd" blue
          && $mqttmacro_on eq $macro_on && $mqttmacro_off eq $macro_off \
          && $mqttcmnd eq $cmnd && $mqttlwt eq $lwt \
          && $mqttvarflag eq $varflag && $mqttvardbl eq $vardbl \
-         && $mqttloglevel eq ($logrx | $logtx<<1)} {
+         && $mqttloglevel eq ($logrx | $logtx<<1) \
+         && $mqtttrigon eq $trigon && $mqtttrigoff eq $trigoff \
+         && $mqttcmdtrig eq $cmdtrig && $mqttallonoff eq $allonoff \
+         && $mqtttrigstdcus eq $trigstdcus         
+         } {
         debug "Nothing changed"
         destroy .mqtt.usr
         cfg_sortlist ext
@@ -2261,11 +2511,8 @@ debug "$name,$mqttname;$cmnd" blue
     }
     set macro [expr {$mqttmacro_on < 256?$mqttmacro_on:"-"}]/[expr {$mqttmacro_off < 256?$mqttmacro_off:"-"}]
 
-    if {$cmnd eq ""} {
-        set cmnd "subrecv"
-    } else {
-        set cmnd Custom_$cmnd
-    }
+    set cmnd [customCmnd $cmnd $cmdtrig $trigstdcus]
+    
     if {[regexp {^<.+>[1-9]?$} $topic] && ($lwt && ($lwt ne $mqttlwt || $cmnd ne $mqttcmnd || $topic ne $mqtttopic))} {
         # lwt changed to off and/or topic or callback changed, only for standard topics
         sendMqtt unsub tele $topic LWT $cmnd
@@ -2279,7 +2526,7 @@ debug "$name,$mqttname;$cmnd" blue
         sendMqtt unsub stat $topic pwr $cmnd
     }
     
-    mk::set cfg.devices!$row name $mqttname topic $mqtttopic  status 0 flag $mqttflag  macro_on $mqttmacro_on macro_off $mqttmacro_off varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}] cmnd $mqttcmnd lwt $mqttlwt
+    mk::set cfg.devices!$row name $mqttname topic $mqtttopic  status 0 flag $mqttflag  macro_on $mqttmacro_on macro_off $mqttmacro_off varflag [expr {$varflag | ($vardbl<<1)}] loglevel [expr {$logrx | ($logtx<<1)}] cmnd $mqttcmnd lwt $mqttlwt trigon $mqtttrigon trigoff $mqtttrigoff cmdtrig $mqttcmdtrig allonoff $mqttallonoff trigstdcus $mqtttrigstdcus
     
     .mqtt.f.f1.ni.f.tv item $item -values [list $mqttname $mqtttopic $mqttstate $flag $macro] -tags black
     destroy .mqtt.usr
@@ -2367,15 +2614,11 @@ proc cfg_device_del {type} {
     }
     set name [$win set [$win selection] name]
     set row [mk::select cfg.$type -exact name $name]
-    lassign [mk::get cfg.$type!$row topic cmnd lwt] topic cmnd lwt
+    lassign [mk::get cfg.$type!$row topic cmnd lwt cndtrig trigstdcus] topic cmnd lwt cmdtrig trigstdcus
     if {$type eq "x10"} {
         sendMqtt unsub cmnd $topic pwr subrecv
     } else {
-        if {$cmnd eq ""} {
-                set cmnd "subrecv"
-        } else {
-            set cmnd Custom_$cmnd
-        }
+        set cmnd [customCmnd $cmnd $cmdtrig $trigstdcus]
         if {$lwt && [regexp {^<.+>[1-9]?$} $topic]} {
             sendMqtt unsub tele $topic LWT $cmnd
         }

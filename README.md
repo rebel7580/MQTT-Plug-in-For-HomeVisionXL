@@ -1,4 +1,4 @@
-**This is Beta Software. Please report issues via the homevision users group**
+**Please report issues via the homevision users group**
 
 # Overview
 
@@ -20,13 +20,14 @@ PUBLISHES a <i>status</i> topic from it when it changes state.
 * *Any* arbitrary generic MQTT message can be sent from your schedule via serial commands or from NetIO, independent of any configured devices.
 
 The client plug-in is designed to work easily with [Tasmota based devices](https://github.com/arendst/Sonoff-Tasmota), using a similar basic topic and LWT structure. Other devices that follow different topic structures likely can be accommodated as well.
+There is a lot of flexibility in the plug-in allowing support for many different situations.
 
 # Installing
 
 The HomeVisionXL MQTT Plug-in package consists of the following files: 
 * mqtt.hap - the plug-in itself, 
 * mqtt.hlp - the help file,
-* mqtt-1.0.tm - MQTT library (courtesy of Schelte Bron!),
+* mqtt-2.0.tm - MQTT library (courtesy of Schelte Bron!),
 * uuid-1.0.5.tm - support library.
 * md5-2.0.4.tm - support library (required by uuid-1.0.5.tm).
 

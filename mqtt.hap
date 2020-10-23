@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.82 $
-# $Date: 2020/10/17 21:33:56 $
+# $Revision: 1.87 $
+# $Date: 2020/10/23 19:35:51 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.82 2020/10/17 21:33:56 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.87 2020/10/23 19:35:51 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -48,6 +48,7 @@ array set cfg {
     analogEnable 0
     inputEnable  0
     outputEnable 0
+    irEnable     0
     listWidths  {0 0 0}
     logging      0
     logpath      ""
@@ -78,6 +79,7 @@ set objtypes {
     analog {order 7 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle ""}
     input  {order 8 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle ""     high ""   low low}
     output {order 9 on high off low   toggle toggle state state set high clear low   setto ""  cycle ""     high high low low}
+    ir     {order a on on   off ""    toggle ""     state state set ""   clear ""    setto on  cycle ""}
 }
 
 set updtfp  {
@@ -545,7 +547,18 @@ proc subrecv {topic msg {retain 0}} {
                                 }
                                 action var set $id $val
                                 action var update
-                            } else {
+                            } elseif {$object eq "ir"} {
+                                if {$payload ne "on"} {return}
+                                set val 1
+                                set cmd [setCmd $payload $val "other"]
+                                if {$cfg(pwrStatResponse)} {
+                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
+                                }
+                                if {$cfg(rstStatResponse)} {
+                                    sendMqtt pub stat $dtopic rst [setResponse [list "STATE" $val]] [expr {($loglevel & 0x02)>>1}] $retain
+                                }
+                                action ir transmit $id 1
+                           } else {
                                 if {$object eq "flag"} {
                                     if {$payload eq "toggle"} {
                                         set cmd [string map -nocase {Set Clear Clear Set} $state]
@@ -724,7 +737,18 @@ proc subrecv {topic msg {retain 0}} {
                                         sendMqtt pub stat $dtopic rst [setResponse [list "STATE" $cmd]] [expr {($loglevel & 0x02)>>1}] $retain
                                     }
                                     action flag [string tolower $cmd] $id
-                                } elseif {$object eq "var"} {
+                                 } elseif {$object eq "ir"} {
+                                    if {$val > 9} {set val 9}
+                                    if {$val < 1} {set val 1}
+                                    set cmd [setCmd "on" $val $model]
+                                    if {$cfg(pwrStatResponse)} {
+                                        sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
+                                    }
+                                    if {$cfg(rstStatResponse)} {
+                                        sendMqtt pub stat $dtopic rst [setResponse [list "STATE" $val]] [expr {($loglevel & 0x02)>>1}] $retain
+                                    }
+                                    action ir transmit $id $val
+                               } elseif {$object eq "var"} {
                                     set val [expr {0xffff & int($val)}]
                                     if {$varflag & 0x01} {
                                         if {0x01 & $val} {
@@ -834,11 +858,15 @@ proc hvrecv {fulltopic msg {retain 0}} {
             return
         }
     }
+    set pos [lsearch -exact $objs "ir"]
+    set objs [lreplace $objs $pos $pos]
     set match [join $objs |]
+    if {$match eq ""} {
+        return
+    }
     foreach row [mk::select cfg.x10 -regexp object $match -sort object] {
         set objstat [getStatus $row]
         lassign [mk::get cfg.x10!$row topic object loglevel retain] otopic object loglevel retain
-        debug "otopic:$otopic" red
         set cmd [dict get $objstat cmd]
         if {$cfg(pwrStatResponse)} {
             sendMqtt pub stat $otopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
@@ -850,10 +878,10 @@ proc hvrecv {fulltopic msg {retain 0}} {
                     lappend rcmd $k $v
                 }
             } elseif {$object in {x10 light}} {
-                    if {![regexp {>([0-9]+)} $otopic --> idx]} {set idx ""}
-                    lappend rcmd $cfg(pwrPostfix)$idx $cmd
+                if {![regexp {>([0-9]+)} $otopic --> idx]} {set idx ""}
+                lappend rcmd $cfg(pwrPostfix)$idx $cmd
             } else {
-                    lappend rcmd "STATE" $cmd
+                lappend rcmd "STATE" $cmd
             }
             sendMqtt pub stat $otopic rst [setResponse $rcmd] [expr {($loglevel & 0x02)>>1}] $retain
         }
@@ -946,6 +974,10 @@ proc getStatus {row} {
             set newstate "Unknown"
         }
         set cmd $newstate
+        set newlevel "-"
+    } elseif {$object eq "ir"} {
+        set newstate "Unknown"
+        set cmd "Unknown"
         set newlevel "-"
     } elseif {$object in {x10 light}} {
         set cmd [setCmd $newstate $newlevel $model]
@@ -1789,9 +1821,10 @@ proc cfg_mqtt {} {
     ttk::checkbutton .mqtt.f.f3.ni.fo.c7 -text "Analog" -variable cfg(analogEnable) -command {cfg_objenable analog}
     ttk::checkbutton .mqtt.f.f3.ni.fo.c8 -text "Inputs" -variable cfg(inputEnable) -command {cfg_objenable input}
     ttk::checkbutton .mqtt.f.f3.ni.fo.c9 -text "Outputs" -variable cfg(outputEnable) -command {cfg_objenable output}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c10 -text "IR" -variable cfg(irEnable) -command {cfg_objenable ir}
 
     grid .mqtt.f.f3.ni.fo.c1 .mqtt.f.f3.ni.fo.c3 .mqtt.f.f3.ni.fo.c4 .mqtt.f.f3.ni.fo.c8 .mqtt.f.f3.ni.fo.c9  -sticky news -padx 3
-    grid .mqtt.f.f3.ni.fo.c2 .mqtt.f.f3.ni.fo.c5 .mqtt.f.f3.ni.fo.c6 .mqtt.f.f3.ni.fo.c7 .mqtt.f.f3.ni.fo.c8 .mqtt.f.f3.ni.fo.c9  -sticky news -padx 3
+    grid .mqtt.f.f3.ni.fo.c2 .mqtt.f.f3.ni.fo.c5 .mqtt.f.f3.ni.fo.c6 .mqtt.f.f3.ni.fo.c7 .mqtt.f.f3.ni.fo.c10  -sticky news -padx 3
     grid .mqtt.f.f3.ni.fo -columnspan 3 -sticky ew -padx 5 -pady 5
 
     grid columnconfigure .mqtt.f.f3.ni.fo all -weight 1
@@ -2452,6 +2485,9 @@ proc cfg_object_add {} {
             set newstate "-"
         } elseif {$mqttobj eq "flag"} {
             set newlevel "-"
+        } elseif {$mqttobj eq "ir"} {
+            set newlevel "-"
+            set newstate "-"
         } elseif {$mqttobj in {input output}} {
             set os [hvObjectState $mqttobj $mqttid]
             if {$os ne ""} {
@@ -3291,8 +3327,11 @@ proc cfg_object_set {w vid vobj} {
             set id [getid input [string index $grp 1] $num]
             set object "input"
         } elseif {[regexp {^O[A-Q]$} $grp]} {
-            set id [getid output [string index $grp 1] $num]
-            set object "output"
+            set id [getid ouput [string index $grp 1] $num]
+             set object "output"
+        } elseif {[regexp {^IR$} $grp]} {
+            set id $num
+            set object "ir"
         } else {
             set id [expr {(([scan $grp %c] - 65)*16) + $num - 1}]
             set object "x10"
@@ -3335,7 +3374,7 @@ proc createobjlist {widget {object ""}} {
             incr i
         }
     }
-    foreach obj {light flag var hvac temp analog} {
+    foreach obj {light flag var ir hvac temp analog} {
         if {$cfg(${obj}Enable) || $object eq $obj} {
             set offset [expr {$offset + $cnt}]
             dict set objlist $obj offset $offset
@@ -3381,7 +3420,11 @@ proc createobjlist {widget {object ""}} {
         if {$mqttobj eq "light"} {
             .mqtt.usr.c3 current [expr {[lsearch -exact $x10types "light"] / 2}]
         }
-        $widget current $idx
+        if {[catch {$widget current $idx}]} {
+            $widget current 0
+            set mqttid 256
+            set mqttobj ""
+        }
     } else {
         $widget current 0
         set mqttid 256

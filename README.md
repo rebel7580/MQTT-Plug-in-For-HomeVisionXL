@@ -2,24 +2,30 @@
 
 # Overview
 
-The MQTT Client Plug-in provides a client interface to MQTT for HomeVision. The MQTT interface has three distinct functions:
-
-* For "External" MQTT-enabled devices (e.g., Sonoff switches with Tasmota SW),
+The MQTT Client Plug-in provides a client interface to MQTT for HomeVision.
+Its main purposes are to control MQTT enabled devices via the HomeVision Schedule or NetIO and
+to control HomeVision objects by MQTT sources.
+The MQTT interface has three distinct functions:
+* For "external" MQTT-enabled devices (e.g., Sonoff switches with Tasmota SW),
 the MQTT Plug-in acts as an MQTT controller.
 The plug-in PUBLISHES <i>command</i> topics to these devices
 to control them
-and SUBSCRIBES to <i>status</i> topics from these devices to track state changes.
-Actions such as setting Flags or Variables and running macros can be taken based on that status.
-* For "Internal" objects defined in HomeVision,
+and SUBSCRIBES to <i>status</i> topics from these devices to track their state changes.
+Changes are tracked by Actions such as setting Flags or Variables and running Macros based on that status.
+
+* For "internal" objects defined in HomeVision
+(such as X-10 modules, flags, inputs, etc.),
 the MQTT Plug-in acts as a "proxy" for them, essentially making them appear to be MQTT-enabled.
-For each selected device, the plug-in 
-SUBSCRIBES to a <i>command</i> topic to it
+For each selected object, the plug-in 
+SUBSCRIBES to a <i>command</i> topic
 so it can be controlled
 and
-PUBLISHES a <i>status</i> topic from it when it changes state.
-* *Any* arbitrary generic MQTT message can be sent from your schedule via serial commands or from NetIO, independent of any configured devices.
+PUBLISHES a <i>status</i> topic when it changes state.
 
-The client plug-in is designed to work easily with [Tasmota based devices](https://github.com/arendst/Sonoff-Tasmota), using a similar basic topic and LWT structure. Other devices that follow different topic structures likely can be accommodated as well.
+* Generic MQTT topics can be sent from the HomeVision schedule via serial commands, from NetIO, or from custom plug-ins, independent of any configured devices.
+
+While the client plug-in is designed to work easily with [Tasmota based devices](https://github.com/arendst/Sonoff-Tasmota), using a similar topic and LWT structure,
+other devices that follow different topic structures likely can be accommodated as well.
 There is a lot of flexibility in the plug-in allowing support for many different situations.
 
 # Installing

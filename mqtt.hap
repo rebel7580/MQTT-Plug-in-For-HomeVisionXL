@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.88 $
-# $Date: 2020/11/02 18:47:22 $
+# $Revision: 1.90 $
+# $Date: 2020/12/10 16:10:32 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.88 2020/11/02 18:47:22 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.90 2020/12/10 16:10:32 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -117,7 +117,8 @@ package require uuid 1.0.5
 
 proc connect {} {
     global mymqtt cfg
-debug "connect" red
+
+    debug "connect" red
     if {[info exists mymqtt] && $mymqtt ne ""} {
         $mymqtt destroy
     }
@@ -157,15 +158,15 @@ proc disconnect {} {
 #
 # Returns a list containing a dict with the following key/values:
 #   template {value}   One of <T>,>T<,<>T,T<>,><T,T><,<T,>T,T>,T<,T.
-#   pre pos {value}    Prefix position 1-3, 0 if no prefix.
+#   pre pos {value}    Prefix position 1-3, -1 if no prefix.
 #   pre type {value}   Prefix string, "" if no prefix.
 #   topic pos {value}  Sub-topic position 1-3.
 #   topic name {value} Sub-topic string.
 #   topic type {value} "s" (standard-contains both < and >), "ns" (non-standard) otherwise.
-#   post pos {value}   Postfix position 1-3, 0 if no postfix.
+#   post pos {value}   Postfix position 1-3, -1 if no postfix.
 #   post type {value}  Postfix string, "" if no postfix.
 #   post ntype {value} Post type with "Relay" number striped off.
-#   post index {value}   "Relay" number or "[0-9]*" if none, or "" if no postfix.
+#   post index {value} "Relay" number or "[0-9]*" if none, or "" if no postfix.
 #   match              Regexp expression to match the full topic.
 
 hvPublic topicTemplate
@@ -1116,7 +1117,6 @@ proc objupdate {type {publish 1}} {
 }
 
 proc subscribe {{type sub}} {
-    global mymqtt
 
     if {$type ni {sub unsub}} {return}
 
@@ -1155,7 +1155,6 @@ proc customCmnd {cmnd cmdtrig trigstdcus} {
 
 # Send command
 proc sendCmd {name cmd} {
-    global mymqtt
 
     set retain 0
     if {$name in {pub}} {
@@ -1361,23 +1360,24 @@ proc mqttComm {args} {
     }
     set cb_pl [lassign $nargs action topic]
 
-    if {$action eq "" || $topic eq ""} {return "0"}
+    if {$action eq "" || $topic eq ""} {return 0}
     if {$action eq "sub"} {
         lassign $cb_pl cb
-        if {$cb eq "" } {return "0"}
+        if {$cb eq "" } {return 0}
         hvImport -name Custom_$cb $cb
         sendMqtt sub cmnd $topic pwr Custom_$cb
     } elseif {$action eq "unsub"} {
         lassign $cb_pl cb
-        if {$cb eq "" } {return "0"}
+        if {$cb eq "" } {return 0}
         sendMqtt unsub cmnd $topic pwr Custom_$cb
     } elseif {$action eq "stat"} {
         if {$cb_pl eq ""} {return 0}
         sendMqtt pub stat $topic pwr [join $cb_pl] $log $retain
     } elseif {$action in {cmnd pub}} {
         sendMqtt pub cmnd $topic pwr [join $cb_pl] $log $retain
+    } else {
+        return 0
     }
-
     return 1
 }
 
@@ -2120,12 +2120,13 @@ proc cfg_statresp {} {
     global cfg
 
     if {!$cfg(pwrStatResponse) && !$cfg(rstStatResponse)} {
-        array set cfg {pwrStatResponse 1}
+        set cfg(pwrStatResponse) 1
     }
     if {$cfg(rstStatResponse)} {
         .mqtt.f.f2.fr.c45c state !disabled
     } else {
         .mqtt.f.f2.fr.c45c state disabled
+        set cfg(rstDimming) 0
     }
 }
 
@@ -3080,7 +3081,6 @@ proc cfg_object_chg {item} {
 }
 
 proc cfg_device_del {type} {
-    global mymqtt
 
     if {$type eq "x10"} {
         set win .mqtt.f.f3.ni.f.tv
@@ -3336,7 +3336,7 @@ proc cfg_object_set {w vid vobj} {
             set id [getid input [string index $grp 1] $num]
             set object "input"
         } elseif {[regexp {^O[A-Q]$} $grp]} {
-            set id [getid ouput [string index $grp 1] $num]
+            set id [getid output [string index $grp 1] $num]
             set object "output"
         } else {
             set id [expr {(([scan $grp %c] - 65)*16) + $num - 1}]

@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.90 $
-# $Date: 2020/12/10 16:10:32 $
+# $Revision: 1.91 $
+# $Date: 2020/12/28 17:44:25 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.90 2020/12/10 16:10:32 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.91 2020/12/28 17:44:25 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -568,6 +568,7 @@ proc subrecv {topic msg {retain 0}} {
                                     set newstate $cmd
                                     set newlevel "-"
                                     lappend rcmd "STATE" $cmd
+                                    set dim 0
                                 } elseif {$object in {output}} {
                                     set os [dict get $objtypes $object $payload]
                                     if {$payload eq "toggle"} {
@@ -581,6 +582,7 @@ proc subrecv {topic msg {retain 0}} {
                                     set newstate $cmd
                                     set newlevel "-"
                                     lappend rcmd "STATE" $cmd
+                                    set dim 0
                                 } elseif {$object in {x10 light}} {
                                     set dim 1
                                     set tmppay $payload

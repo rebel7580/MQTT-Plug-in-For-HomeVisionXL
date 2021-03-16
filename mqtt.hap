@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.91 $
-# $Date: 2020/12/28 17:44:25 $
+# $Revision: 1.99 $
+# $Date: 2021/03/14 22:02:33 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.91 2020/12/28 17:44:25 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.99 2021/03/14 22:02:33 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -98,6 +98,9 @@ set connected  0
 set mymqtt     ""
 set logsuspend 0
 set logmqtt 0
+set noid 0
+set nous 0
+set yesretain 0
 
 # define mqtt log command
 if {[package require mqtt] >= 2} {
@@ -370,14 +373,15 @@ proc subrecv {topic msg {retain 0}} {
                             if {$id ne "" && $id < 512} {
                                 if {$id < 256} {
                                     action flag set $id
+                                    runMacro $macro_on
                                 } elseif {$varflag & 0x01} {
                                     set id [expr {$id - 256}]
                                     action var set $id 1
                                     action var update
+                                    runMacro $macro_on
                                 }
-                            }
-                            if {$macro_on ne "" && $macro_on < 256 && $varflag & 0x01} {
-                                action macro run $macro_on
+                            } elseif {$id == 512} {
+                                runMacro $macro_on
                             }
                         } elseif {$payload eq "off"} {
                             mk::set cfg.devices!$row state "Off" status 0
@@ -385,14 +389,15 @@ proc subrecv {topic msg {retain 0}} {
                             if {$id ne "" && $id < 512} {
                                 if {$id < 256} {
                                     action flag clear $id
+                                    runMacro $macro_off
                                 } elseif {$varflag & 0x01} {
                                     set id [expr {$id - 256}]
                                     action var set $id 0
                                     action var update
+                                    runMacro $macro_off
                                 }
-                            }
-                            if {$macro_off ne "" && $macro_off < 256 && $varflag & 0x01} {
-                                action macro run $macro_off
+                            } elseif {$id == 512} {
+                                runMacro $macro_off
                             }
                         } elseif {[string first $cfg(cycleTxt) $msg] != -1} {
                             mk::set cfg.devices!$row state [string range $cfg(cycleTxt) 0 2 ] status 0
@@ -407,10 +412,8 @@ proc subrecv {topic msg {retain 0}} {
                                     }
                                     action var increment $id
                                     action var update
+                                    runMacro $macro_on
                                 }
-                            }
-                            if {$macro_on ne "" && $macro_on < 256 && !($varflag & 0x01)} {
-                                action macro run $macro_on
                             }
                         } else {
                             lassign $payload st val
@@ -423,38 +426,36 @@ proc subrecv {topic msg {retain 0}} {
                                 if {[triggers $row $topic $msg "on" $val] == 2} {return}
                                 if {$id ne "" && $id < 512} {
                                     if {$id < 256} {
-                                        if {0x01 & $val} {
+                                        if {$val & 0x01} {
                                             action flag set $id
+                                            runMacro $macro_on
                                         } else {
                                             action flag clear $id
+                                            runMacro $macro_off
                                         }
                                     } else {
                                         set id [expr {$id - 256}]
                                         if {$varflag & 0x01} {
-                                            if {0x01 & $val} {
-                                                set val 1
+                                            if {$val & 0x01} {
+                                                action var set $id 1
+                                                action var update
+                                                runMacro $macro_on
                                             } else {
-                                                set val 0
+                                                action var set $id 0
+                                                action var update
+                                                runMacro $macro_off
                                             }
                                         } else {
                                             if {$varflag & 0x02 && ![catch {hvObjectState var [expr {$id+1}]}]} {
                                                 action var set [expr {$id+1}] [expr {$val / 256}]
-                                                set val [expr {$val % 256}]
                                             }
+                                            action var set $id [expr {$val % 256}]
+                                            action var update
+                                            runMacro $macro_on
                                         }
-                                        action var set $id [expr {0xff & $val}]
-                                        action var update
                                     }
-                                }
-                                if {$macro_on ne "" && $macro_on < 256} {
-                                    if {!($varflag & 0x01) || ($varflag & 0x01 && $val & 0x01)} {
-                                        action macro run $macro_on
-                                    }
-                                }
-                                if {$macro_off ne "" && $macro_off < 256} {
-                                    if {$varflag & 0x01 && !($val & 0x01)} {
-                                        action macro run $macro_off
-                                    }
+                                } elseif {$id == 512} {
+                                    runMacro $macro_on
                                 }
 
                             } else {
@@ -517,6 +518,42 @@ proc subrecv {topic msg {retain 0}} {
                                     lappend rcmd "STATE" $cmd
                                 }
                                 sendMqtt pub stat $dtopic rst [setResponse $rcmd $dim] [expr {($loglevel & 0x02)>>1}] $retain
+                            }
+                        } elseif {$object eq "hvac"} {
+                            set cmd [lindex {Hold Run} [expr {$state & 0x01}]]
+                            lappend cmd [lindex {Off Heat Cool Auto} [expr {($state & 0x06)>>1}]]
+                            lappend cmd [lindex {Auto On} [expr {($state & 0x08)>>3}]]
+                            lappend cmd $level
+                            lappend cmd $model
+                            foreach mode $payload {
+                                if {[string is double -strict $mode]} {
+                                    set temp [expr {int($mode)}]
+                                    if {$temp >= 0 && $temp <= 99} {
+                                        mk::set cfg.x10!$row model $temp
+                                        set cmd [lreplace $cmd 4 4 $temp]
+                                        action hvac setpoint [expr {$id-1}] $temp
+                                    }
+                                } elseif {$mode in {run hold}} {
+                                    set cmd [lreplace $cmd 0 0 [string totitle $mode]]
+                                    action hvac $mode [expr {$id-1}]
+                                } elseif {$mode in {off cool heat auto}} {
+                                    set cmd [lreplace $cmd 1 1 [string totitle $mode]]
+                                    action hvac $mode [expr {$id-1}]
+                                } elseif {$mode in {fanon fanauto}} {
+                                    set cmd [lreplace $cmd 2 2 [string totitle [string range $mode 3 end]]]
+                                    action hvac $mode [expr {$id-1}]
+                                } else {
+                                    continue
+                                }
+                            }
+                            if {$cfg(pwrStatResponse)} {
+                                sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
+                            }
+                            if {$cfg(rstStatResponse)} {
+                                foreach k {Control HVAC Fan Temperature Setpoint} v $cmd {
+                                    lappend rcmd $k $v
+                                }
+                                sendMqtt pub stat $dtopic rst [setResponse $rcmd] [expr {($loglevel & 0x02)>>1}] $retain
                             }
                         } elseif {$payload in {on off toggle set clear low high}} {
                             if {[dict get $objtypes $object $payload] eq ""} {
@@ -640,39 +677,6 @@ proc subrecv {topic msg {retain 0}} {
                                 action var increment $id
                                 action var update
                             }
-                        } elseif {$object eq "hvac"} {
-                            set cmd [lindex {Hold Run} [expr {$state & 0x01}]]
-                            lappend cmd [lindex {Off Heat Cool Auto} [expr {($state & 0x06)>>1}]]
-                            lappend cmd [lindex {Auto On} [expr {($state & 0x08)>>3}]]
-                            lappend cmd $level
-                            lappend cmd $model
-                            foreach mode $payload {
-                                if {[string is integer -strict $mode] && $mode >= 0 && $mode <= 99} {
-                                    mk::set cfg.x10!$row model $mode
-                                    set cmd [lreplace $cmd 4 4 $mode]
-                                    action hvac setpoint [expr {$id-1}] $mode
-                                } elseif {$mode in {run hold}} {
-                                    set cmd [lreplace $cmd 0 0 [string totitle $mode]]
-                                    action hvac $mode [expr {$id-1}]
-                                } elseif {$mode in {off cool heat auto}} {
-                                    set cmd [lreplace $cmd 1 1 [string totitle $mode]]
-                                    action hvac $mode [expr {$id-1}]
-                                } elseif {$mode in {fanon fanauto}} {
-                                    set cmd [lreplace $cmd 2 2 [string totitle [string range $mode 3 end]]]
-                                    action hvac $mode [expr {$id-1}]
-                                } else {
-                                    continue
-                                }
-                            }
-                            if {$cfg(pwrStatResponse)} {
-                                sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
-                            }
-                            if {$cfg(rstStatResponse)} {
-                                foreach k {Control HVAC Fan Temperature Setpoint} v $cmd {
-                                    lappend rcmd $k $v
-                                }
-                                sendMqtt pub stat $dtopic rst [setResponse $rcmd] [expr {($loglevel & 0x02)>>1}] $retain
-                            }
                         } else {
                             lassign $payload st val
                             if {($st eq "on" && \
@@ -790,6 +794,12 @@ proc subrecv {topic msg {retain 0}} {
         } default {
             debug "Unknown prefix:$type" red
         }
+}
+
+proc runMacro {macro} {
+    if {[string is integer -strict $macro] && $macro < 256} {
+        action macro run $macro
+    }
 }
 
 proc levelpercent {model arg} {
@@ -1245,6 +1255,357 @@ proc sendMqtt {action pre topic post cmd args} {
     }
 }
 
+proc createObjects {} {
+    set type [.mqtt.f.f4.c1 get]
+    set win .mqtt.f.f4.ni.f.tv
+    if {$type eq "All" || $type eq ""} {
+        $win delete [$win children {}]
+        $win state disabled
+        return
+    } else {
+        $win state readonly
+    }
+    if {$type eq "flag_b"} {
+        set match "flag"
+    } else {
+        set match $type
+    }
+    set rows [mk::select cfg.x10 -regexp object $match -sort id]
+
+    $win delete [$win children {}]
+    $win insert {} end -values [list 999 "-" "All"]
+    foreach row $rows {
+        lassign [mk::get cfg.x10!$row id object state name] id object state name
+        set values [format {%3d} $id]
+        if {$object eq "x10"} {
+            lappend values [string map {" " -} [hvObjectId x10 $id]]
+        } elseif {$object in {input output}} {
+            lappend values [string toupper [string index $object 0]][hvObjectId $object $id]
+        } else {
+            lappend values "[string toupper [string range $object 0 1]]-$id"
+        }
+        lappend values $name
+        $win insert {} end -values $values
+    }
+}
+
+hvImport haObjectDiscovery
+proc runDiscovery {} {
+    global noid nous yesretain
+    
+    set type [.mqtt.f.f4.c1 get]
+    set win .mqtt.f.f4.ni.f.tv
+    
+    set opts {}
+    if {$noid == 1} {
+        lappend opts "-noid"
+    }
+    if {$nous == 1} {
+        lappend opts "-nous"
+    }
+    if {$yesretain == 1} {
+        lappend opts "-retain"
+    }
+    set mode [.mqtt.f.f4.c3 get]
+    if {$mode eq "Discover"} {
+        lappend opts 1
+    } elseif {$mode eq "UnDiscover"} {
+        lappend opts 0
+    } else {
+        lappend opts 3
+    }
+    if {$type eq "" || $type eq "All"} {
+    } else {
+        lappend opts $type
+    }
+    set chosen [$win selection]
+    foreach item $chosen {
+        lassign [$win item $item -values] nid id name
+        if {$nid != 999} {
+            lappend opts $nid
+
+        }
+    }
+#   Call local discovery (for internal objects)
+    my_haObjectDiscovery {*}$opts
+    
+#   Call remote discovery (for other plug-ins, like caseta)
+    haObjectDiscovery {*}$opts
+}
+
+proc my_haObjectDiscovery {args} {
+    global cfg objtypes
+
+    debug "HA Discovery:$args;"
+    set ids ""
+    set noid 0
+    set nous 0
+    set retain 0
+    while 1 {
+        if {[lindex $args 0] eq "-noid"} {
+            set noid 1
+            set args [lrange $args 1 end]
+            continue
+        }
+        if {[lindex $args 0] eq "-nous"} {
+            set nous 1
+            set args [lrange $args 1 end]
+            continue
+        }
+        if {[lindex $args 0] eq "-retain"} {
+            set retain 1
+            set args [lrange $args 1 end]
+            continue
+        }
+        break
+    }
+    set flag_b 0
+    set args [lassign $args add]
+    if {$args eq ""} {
+        set match [join [dict keys $objtypes] |]
+    } else {
+        set ids [lassign $args otype]
+        set match [string tolower $otype]
+        if {$match eq "flag_b"} {
+            set match "flag"
+            set flag_b 1
+        } elseif {$match ni [dict keys $objtypes]} {
+            return
+        }
+    }
+    debug "Objects: $match, ids:$ids;" red
+    foreach row [mk::select cfg.x10 -regexp object $match -sort object] {
+        lassign [mk::get cfg.x10!$row id name topic type object model] id name topic type object model
+#        if {$object in {var}} {continue}
+        if {$ids eq "" || $id in $ids} {
+            sendDiscovery $noid $nous $retain $add $id $name $topic [expr {$flag_b == 1 ? "flag_b" : $object}] $model HomeVision
+        }
+    }
+}
+
+hvPublic sendDiscovery
+proc sendDiscovery {noid nous retain add id name topic object type  model {man "CustomSolutions"}} {
+    global cfg
+    if {$object eq "x10"} {
+        set fid [string map {" " -} [hvObjectId x10 $id]]
+    } elseif {$object in {input output}} {
+        set fid [string toupper [string index $object 0]][hvObjectId $object $id]
+    } else {
+        set fid "[string toupper [string range $object 0 1]]-$id"
+    }
+    if {$object eq "flag_b"} {
+        append fid "b"
+    }
+    set objsuffix [string totitle $object]
+    
+    set uid $cfg(clientID)_$fid
+    set topic [string trim $topic "<>"]
+    
+    set discov {}
+    debug "$fid, $uid, $topic;"
+
+    dict set discov unique_id $uid
+    if {$nous == 1} {
+        set name [string map {_ " "} $name]
+    }
+    if {$noid == 1} {
+        dict set discov name "$name"
+    } else {
+        dict set discov name "[string map {_ "-"} $fid] $name"
+    }
+    dict set discov retain false
+    if {$retain == 1} {
+        dict set discov retain true
+    }
+    dict set discov qos 1
+    dict set discov device [format {{"identifiers":["%s"],"name":"%s","model":"%s","manufacturer":"%s"}} "$cfg(clientID)_$objsuffix" "HomeVisionXL $objsuffix" $model $man]
+    
+    switch $object {
+        x10 -
+        light -
+        caseta {
+            dict set discov state_topic "stat/$topic/RESULT"
+            dict set discov command_topic "cmnd/$topic/POWER"
+            dict set discov payload_on "ON"
+            dict set discov payload_off "OFF"
+            if {$type in "app switch"} {
+                set device "switch"
+                dict set discov value_template "{{ value_json.POWER }}"
+            } else {
+                set device "light"
+                dict set discov state_value_template "{{ value_json.POWER }}"
+                dict set discov brightness_command_topic "cmnd/$topic/POWER"
+                dict set discov brightness_state_topic "stat/$topic/RESULT"
+                dict set discov brightness_scale 100
+                dict set discov brightness_value_template "{{ value_json.Dimmer }}"
+                dict set discov on_command_type "brightness"
+            }
+        }
+        flag {
+            set device "switch"
+            dict set discov state_topic "stat/$topic/RESULT"
+            dict set discov value_template "{{ value_json.STATE }}"
+            dict set discov command_topic "cmnd/$topic/POWER"
+            dict set discov payload_on "Set"
+            dict set discov payload_off "Clear"
+            dict set discov state_on "Set"
+            dict set discov state_off "Clear"
+        }
+        flag_b {
+            set device "binary_sensor"
+            dict set discov state_topic "stat/$topic/RESULT"
+            dict set discov value_template "{{ value_json.STATE }}"
+            dict set discov payload_on "Set"
+            dict set discov payload_off "Clear"
+            dict unset discov retain
+            if {[regexp {dc:(\w+)} [hvObjectDesc flag $id] --> dc]} {
+                if {$dc ne ""} {
+                    dict set discov device_class $dc
+                }
+            }
+        }
+        output {
+            set device "switch"
+            dict set discov state_topic "stat/$topic/RESULT"
+            dict set discov value_template "{{ value_json.STATE }}"
+            dict set discov command_topic "cmnd/$topic/POWER"
+            dict set discov payload_on "high"
+            dict set discov payload_off "low"
+            dict set discov state_on "[hvObjectLabel $object $id 1]"
+            dict set discov state_off "[hvObjectLabel $object $id 0]"
+        }
+        ir {
+            set device "switch"
+            dict set discov state_topic "stat/$topic/RESULT"
+            dict set discov value_template "{{ value_json.STATE }}"
+            dict set discov command_topic "cmnd/$topic/POWER"
+            dict set discov payload_on "ON 1"
+            dict set discov payload_off "Off 1"
+            dict set discov state_on "ON"
+            dict set discov state_off "Unknown"
+        }
+        var {
+            set device "sensor"
+            dict set discov state_topic "stat/$topic/RESULT"
+            dict set discov value_template "{{ value_json.STATE }}"
+            dict unset discov retain
+            if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
+                if {$dc ne ""} {
+                    dict set discov device_class $dc
+                }
+            }
+        }
+        analog {
+            set device "sensor"
+            dict set discov state_topic "stat/$topic/RESULT"
+            dict set discov value_template "{{ value_json.STATE }}"
+            dict unset discov retain
+            if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
+                if {$dc ne ""} {
+                    dict set discov device_class $dc
+                }
+            }
+        }
+        temp {
+            set device "sensor"
+            dict set discov state_topic "stat/$topic/RESULT"
+            dict set discov value_template "{{ value_json.STATE }}"
+            dict unset discov retain
+            debug [hvObjectDesc $object $id] red
+            if {[regexp {dc:(\w+)([\-F|\-C]*)} [hvObjectDesc $object $id] --> dc uom]} {
+                if {$dc ne ""} {
+                    dict set discov device_class $dc
+                    set uom [string index $uom 1]
+                    if {$uom in {F C}} {
+                        dict set discov unit_of_measurement "$uom"
+                    } else {
+                        dict set discov unit_of_measurement "F"
+                    }
+ 
+                } else {
+                    dict set discov device_class "temperature"
+                    dict set discov unit_of_measurement "F"
+                }
+            }
+        }
+        input {
+            set device "binary_sensor"
+            dict set discov state_topic "stat/$topic/RESULT"
+            dict set discov value_template "{{ value_json.STATE }}"
+            dict set discov payload_on "[hvObjectLabel $object $id 0]"
+            dict set discov payload_off "[hvObjectLabel $object $id 1]"
+            dict unset discov retain
+            if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
+                if {$dc ne ""} {
+                    dict set discov device_class $dc
+                }
+            }
+        }
+        hvac {
+            set device "climate"
+            dict set discov modes {["auto", "off", "cool", "heat"]}
+            dict set discov fan_modes {["fanauto","fanon"]}
+            dict set discov hold_modes {["run","hold"]}
+            dict set discov mode_command_topic "cmnd/Zone1/POWER"
+            dict set discov hold_command_topic "cmnd/Zone1/POWER"
+            dict set discov temperature_command_topic "cmnd/Zone1/POWER"
+            dict set discov fan_mode_command_topic "cmnd/Zone1/POWER"
+            dict set discov current_temperature_topic "stat/Zone1/RESULT"    
+            dict set discov current_temperature_template "{{ value_json.Temperature }}"   
+            dict set discov mode_state_topic "stat/Zone1/RESULT"
+            dict set discov mode_state_template "{{ value_json.HVAC|lower }}"   
+            dict set discov hold_state_topic "stat/Zone1/RESULT"
+            dict set discov hold_state_template "{{ value_json.Control|lower }}"   
+            dict set discov temperature_state_topic "stat/Zone1/RESULT"
+            dict set discov temperature_state_template "{{ value_json.Setpoint }}"   
+            dict set discov fan_mode_state_topic "stat/Zone1/RESULT"
+            dict set discov fan_mode_state_template "{{ \\\"fan\\\" + value_json.Fan|lower }}"   
+            dict set discov temperature_unit "F"
+            dict set discov precision 1.0
+            dict set discov max_temp 99
+            dict set discov min_temp 55
+            dict set discov device [format {{"identifiers":["%s"],"name":"%s","model":"TX-15","manufacturer":"RCS"}} "$cfg(clientID)_$objsuffix" "HomeVisionXL $objsuffix"]
+        }
+        default {
+            return
+        }
+    }
+
+    foreach key [dict keys $discov] {
+        switch $key {
+            brightness_scale -
+            max_temp -
+            min_temp -
+            qos {
+                set fmt {"%s":%d}
+            }
+            precision -
+            retain -
+            modes -
+            fan_modes -
+            device -
+            hold_modes {
+                set fmt {"%s":%s}
+            }
+            default {
+                 set fmt {"%s":"%s"}
+            }
+        }
+        lappend jl [format $fmt $key [dict get $discov $key]]
+    }
+    append js "{" [join $jl ","] "}"
+    
+    set fulltopic "homeassistant/$device/$uid/config"
+    debug $fulltopic darkblue
+    debug $js blue
+    if {$add == 0} {
+        set js ""
+    }
+    if {$add == 0 || $add == 1} {
+        sendMqtt pub cmnd $fulltopic pwr $js 0 1
+    }
+}
+
 #! Write MQTT status information to log file
 hvPublic mqttLog
 proc mqttLog {str {color red}} {
@@ -1320,10 +1681,19 @@ proc restorelogging {} {
 # Start Trigger section
 
 # mqttComm is called by other plugins to communicate with MQTT.
-# Example: mqttComm {type} {-log} {-retain} action topic {payload}
+#
+#    mqttComm {type} {options} action topic {payload}
+#
+# Examples:
+#    mqttComm {-log} sub|unsub  <topic>|topic callback 
+#    mqttComm {-exactstat -nodim -log -retain} stat|cmnd <topic>|topic {payload}
+#    mqttComm {-log -retain} pub <i>topic</i> {payload}
+#
 # "type" is the name calling plugin's id. (Deprecated.)
 # -log: log this command to MQTT log.
 # -retain: retain this message.
+# -exactstat: Sends a pwr stat regardless of power/result settings.
+# -nodim: Don't include Dimmming in RESULT response
 # "action" is "sub"   - subscribe this topic
 #             "unsub" - unsubscribe this topic
 #             "stat"  - send status for topic/payload
@@ -1333,22 +1703,24 @@ proc restorelogging {} {
 #         standard pre- and post-fixes
 hvPublic mqttcomm
 proc mqttcomm {args} {
-# for backwrd compatibility
+# for backward compatibility
     mqttComm {*}$args
 }
 hvPublic mqttComm
 proc mqttComm {args} {
     global cfg mymqtt
 
-#    debug "mqtt: $args" red
+    debug "mqttComm: $args" red
     if {![info exists mymqtt] || $mymqtt eq ""} {return ""}
     set log 0
     set retain 0
+    set exactstat 0
+    set dim 1
     set nargs $args
-    if {[lindex $nargs 0] ni {sub unsub cmnd stat pub -log -retain}} {
+    if {[lindex $nargs 0] ni {sub unsub cmnd stat pub -log -retain -exactstat -nodim}} {
         set nargs [lrange $args 1 end]
     }
-    for {set i 1} {$i <= 2} {incr i} {
+    while 1 {
         if {[lindex $nargs 0] eq "-log"} {
             set log 1
             set nargs [lrange $nargs 1 end]
@@ -1359,6 +1731,17 @@ proc mqttComm {args} {
             set nargs [lrange $nargs 1 end]
             continue
         }
+        if {[lindex $nargs 0] eq "-exactstat"} {
+            set exactstat 1
+            set nargs [lrange $nargs 1 end]
+            continue
+        }
+        if {[lindex $nargs 0] eq "-nodim"} {
+            set dim 0
+            set nargs [lrange $nargs 1 end]
+            continue
+        }
+        break
     }
     set cb_pl [lassign $nargs action topic]
 
@@ -1374,7 +1757,12 @@ proc mqttComm {args} {
         sendMqtt unsub cmnd $topic pwr Custom_$cb
     } elseif {$action eq "stat"} {
         if {$cb_pl eq ""} {return 0}
-        sendMqtt pub stat $topic pwr [join $cb_pl] $log $retain
+        if {$exactstat || $cfg(pwrStatResponse)} {
+            sendMqtt pub stat $topic pwr [join $cb_pl] $log $retain
+        }
+        if {!$exactstat && $cfg(rstStatResponse)} {
+            sendMqtt pub stat $topic rst [setResponse [list $cfg(pwrPostfix) [join $cb_pl]] $dim] $log $retain
+        }
     } elseif {$action in {cmnd pub}} {
         sendMqtt pub cmnd $topic pwr [join $cb_pl] $log $retain
     } else {
@@ -1699,7 +2087,7 @@ proc saveconfig {{top ""}} {
 
 # MQTT configuration screen
 proc cfg_mqtt {} {
-    global cfg
+    global cfg noid
 
     if {[winfo exists .mqtt]} {
         wm withdraw .mqtt
@@ -1985,6 +2373,63 @@ proc cfg_mqtt {} {
 
     .mqtt.f add .mqtt.f.f2 -text "Settings" -underline 0
 
+    # Discovery Tab
+    ttk::frame .mqtt.f.f4
+    ttk::label .mqtt.f.f4.l1 -text "Object Type:"
+    ttk::combobox .mqtt.f.f4.c1 -state readonly -width 10 \
+      -values {All x10 light var flag flag_b input output analog temp ir hvac caseta}
+    ttk::frame .mqtt.f.f4.ni
+    ttk::frame .mqtt.f.f4.ni.f
+    ttk::label .mqtt.f.f4.l2 -text "Choose Object(s)"
+    ttk::treeview .mqtt.f.f4.ni.f.tv -columns {nid id name} \
+      -displaycolumns {id name} -show headings -height 15 \
+      -yscrollcommand {.mqtt.f.f4.ni.f.vs set}
+    .mqtt.f.f4.ni.f.tv heading id -text "ID"
+    .mqtt.f.f4.ni.f.tv column id -stretch 1 -width 70 -anchor center
+    .mqtt.f.f4.ni.f.tv column name -stretch 1 -width 200 -anchor center
+    .mqtt.f.f4.ni.f.tv heading name -text "Object Name"
+    ttk::scrollbar .mqtt.f.f4.ni.f.vs -command {.mqtt.f.f4.ni.f.tv yview}
+    grid .mqtt.f.f4.ni.f.tv .mqtt.f.f4.ni.f.vs -sticky news
+    grid columnconfigure .mqtt.f.f4.ni.f .mqtt.f.f4.ni.f.tv -weight 1
+    grid rowconfigure .mqtt.f.f4.ni.f .mqtt.f.f4.ni.f.tv -weight 1
+
+    ttk::label .mqtt.f.f4.l3 -text "Discovery Type:"
+    ttk::combobox .mqtt.f.f4.c3 -state readonly -width 10 \
+      -values {Test Discover UnDiscover}
+    ttk::label .mqtt.f.f4.l4 -text "NO ID in Name?"
+    ttk::checkbutton .mqtt.f.f4.c4 -variable noid
+    ttk::label .mqtt.f.f4.l5 -text "Underscore to space in Name?"
+    ttk::checkbutton .mqtt.f.f4.c5 -variable nous
+    ttk::label .mqtt.f.f4.l6 -text "Retain Flag for HA published msgs?"
+    ttk::checkbutton .mqtt.f.f4.c6 -variable yesretain
+    bind .mqtt.f.f4.c1 <<ComboboxSelected>> createObjects
+    ttk::button .mqtt.f.f4.b1 -text "Run Discovery"  -width 20  -command runDiscovery
+
+    grid .mqtt.f.f4.l1 .mqtt.f.f4.c1 -sticky nws -padx 3 -pady 10
+    grid configure .mqtt.f.f4.l1     -sticky nes -padx 3
+    grid .mqtt.f.f4.ni.f  -padx 4 -pady 4 -sticky wens
+    grid .mqtt.f.f4.l2 .mqtt.f.f4.ni -sticky news -padx 3
+    grid rowconfigure .mqtt.f.f4.ni .mqtt.f.f4.ni.f -weight 1
+    grid configure .mqtt.f.f4.l2     -sticky nes -padx 3
+    grid .mqtt.f.f4.l3 .mqtt.f.f4.c3 -sticky nws -padx 3 -pady 10
+    grid configure .mqtt.f.f4.l3     -sticky nes -padx 3
+    grid .mqtt.f.f4.l4 .mqtt.f.f4.c4 -sticky nws -padx 3 -pady 10
+    grid configure .mqtt.f.f4.l4     -sticky nes -padx 3
+    grid .mqtt.f.f4.l5 .mqtt.f.f4.c5 -sticky nws -padx 3 -pady 10
+    grid configure .mqtt.f.f4.l5     -sticky nes -padx 3
+    grid .mqtt.f.f4.l6 .mqtt.f.f4.c6 -sticky nws -padx 3 -pady 10
+    grid configure .mqtt.f.f4.l6     -sticky nes -padx 3
+    grid  .mqtt.f.f4.b1  -columnspan 2 -padx {4 13} -pady {2 15}
+    grid rowconfigure .mqtt.f.f4 .mqtt.f.f4.ni -weight 1
+    grid columnconfigure .mqtt.f.f4 1 -weight 1
+    grid .mqtt.f.f4 -sticky news  -padx 5 -pady 5
+
+    createObjects
+
+    .mqtt.f.f4.c3 set "Test"
+    
+    .mqtt.f add .mqtt.f.f4 -text "Discovery" -state hidden
+
     grid .mqtt.f    -sticky snew    -padx 5 -pady 5 -columnspan 3
 
     ttk::button .mqtt.b3 -text Done -width 8 -command cfg_done \
@@ -1999,11 +2444,26 @@ proc cfg_mqtt {} {
     }
 
     wm protocol .mqtt WM_DELETE_WINDOW {.mqtt.b3 invoke}
+    
+    bind .mqtt <F4> {enableDiscovery}
 
     if {[regexp {\+-?[0-9]+\+-?[0-9]+} $cfg(geometry)]} {
         wm geometry .mqtt $cfg(geometry)
     }
     wm deiconify .mqtt
+}
+
+set enableDiscovery 0
+proc enableDiscovery {} {
+    global enableDiscovery
+debug "run enable:$enableDiscovery" red
+    if {$enableDiscovery == 1} {
+        set enableDiscovery 0
+        .mqtt.f tab .mqtt.f.f4 -state hidden
+    } else {
+        set enableDiscovery 1
+        .mqtt.f tab .mqtt.f.f4 -state normal
+    }
 }
 
 proc bindWidths {} {

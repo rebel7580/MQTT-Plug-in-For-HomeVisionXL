@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.99 $
-# $Date: 2021/03/14 22:02:33 $
+# $Revision: 1.102 $
+# $Date: 2021/03/27 19:36:59 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.99 2021/03/14 22:02:33 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.102 2021/03/27 19:36:59 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -63,7 +63,7 @@ set cfg(txtext) [expr {$tcl_platform(platform) eq "windows" ? ".txt" : ""}]
 set x10types {
     none  ""
     x10   "Standard X-10 Lamp Module"
-    app   "Standard X-10 Applicance Module"
+    app   "Standard X-10 Appliance Module"
     ext   "X-10 Lamp Module with Direct Level Control"
     pcs   "Powerline Control Systems (PCS) Lamp Module"
     light "Custom Lights"
@@ -101,6 +101,7 @@ set logmqtt 0
 set noid 0
 set nous 0
 set yesretain 0
+set nodevice 0
 
 # define mqtt log command
 if {[package require mqtt] >= 2} {
@@ -152,6 +153,7 @@ proc disconnect {} {
     if {[info exists mymqtt] && $mymqtt ne ""} {
         subscribe unsub
         $mymqtt disconnect
+        mqttReady disconnected 0
     }
 }
 
@@ -178,9 +180,18 @@ proc topicTemplate {fulltopic} {
 
     set ft [split $fulltopic /]
     set ftlength [llength $ft]
+    dict set layout template ""
     dict set layout pre pos -1
-    dict set layout post pos -1
+    dict set layout pre type ""
     dict set layout topic pos -1
+    dict set layout topic name ""
+    dict set layout topic type ""
+    dict set layout post pos -1
+    dict set layout post type ""
+    dict set layout post ntype ""
+    dict set layout post index ""
+    dict set layout match ""
+
     foreach i {cmndPrefix statPrefix telePrefix} {
         set pr [lsearch -exact $ft $cfg($i)]
         if {$pr >= 0} {
@@ -1254,8 +1265,10 @@ proc sendMqtt {action pre topic post cmd args} {
         mqttLog "tx: $topic $cmd"
     }
 }
-
+hvImport getDiscovDevices
 proc createObjects {} {
+    global discovDevices
+
     set type [.mqtt.f.f4.c1 get]
     set win .mqtt.f.f4.ni.f.tv
     if {$type eq "All" || $type eq ""} {
@@ -1270,32 +1283,54 @@ proc createObjects {} {
     } else {
         set match $type
     }
-    set rows [mk::select cfg.x10 -regexp object $match -sort id]
 
     $win delete [$win children {}]
     $win insert {} end -values [list 999 "-" "All"]
-    foreach row $rows {
-        lassign [mk::get cfg.x10!$row id object state name] id object state name
-        set values [format {%3d} $id]
-        if {$object eq "x10"} {
-            lappend values [string map {" " -} [hvObjectId x10 $id]]
-        } elseif {$object in {input output}} {
-            lappend values [string toupper [string index $object 0]][hvObjectId $object $id]
-        } else {
-            lappend values "[string toupper [string range $object 0 1]]-$id"
+    
+    if {$type in [dict keys $discovDevices]} {
+        dict for {id info} [dict get $discovDevices $type] {
+            set values [list $id [lindex $info 0] [lindex $info 1]]
+            $win insert {} end -values $values
         }
-        lappend values $name
-        $win insert {} end -values $values
+    } else {
+        set rows [mk::select cfg.x10 -regexp object $match -sort id]
+        foreach row $rows {
+            lassign [mk::get cfg.x10!$row id object state name] id object state name
+            set values [format {%3d} $id]
+            if {$object eq "x10"} {
+                lappend values [string map {" " -} [hvObjectId x10 $id]]
+            } elseif {$object in {input output}} {
+                lappend values [string toupper [string index $object 0]][hvObjectId $object $id]
+            } else {
+                lappend values "[string toupper [string range $object 0 1]]-$id"
+            }
+            lappend values $name
+            $win insert {} end -values $values
+        }
     }
 }
 
-hvImport haObjectDiscovery
+proc createList {} {
+    global discovDevices
+
+    set discovDevices [getDiscovDevices]
+    for {set i 0} {$i < [llength $discovDevices]} {incr i} {
+        dict set tmp {*}[lindex $discovDevices $i]
+    }
+    set discovDevices $tmp
+    set values {All x10 light var flag flag_b input output analog temp ir hvac}
+    foreach obs [dict keys $discovDevices] {
+        lappend values $obs
+    }
+    return $values
+}
+
 proc runDiscovery {} {
-    global noid nous yesretain
-    
+    global noid nous yesretain nodevice
+
     set type [.mqtt.f.f4.c1 get]
     set win .mqtt.f.f4.ni.f.tv
-    
+
     set opts {}
     if {$noid == 1} {
         lappend opts "-noid"
@@ -1305,6 +1340,9 @@ proc runDiscovery {} {
     }
     if {$yesretain == 1} {
         lappend opts "-retain"
+    }
+    if {$nodevice == 1} {
+        lappend opts "-nodevice"
     }
     set mode [.mqtt.f.f4.c3 get]
     if {$mode eq "Discover"} {
@@ -1326,14 +1364,12 @@ proc runDiscovery {} {
 
         }
     }
-#   Call local discovery (for internal objects)
     my_haObjectDiscovery {*}$opts
-    
-#   Call remote discovery (for other plug-ins, like caseta)
-    haObjectDiscovery {*}$opts
 }
 
-proc my_haObjectDiscovery {args} {
+hvImport -name my_haObjectDiscovery haObjectDiscovery
+hvPublic haObjectDiscovery
+proc haObjectDiscovery {args} {
     global cfg objtypes
 
     debug "HA Discovery:$args;"
@@ -1341,6 +1377,7 @@ proc my_haObjectDiscovery {args} {
     set noid 0
     set nous 0
     set retain 0
+    set nodevice 0
     while 1 {
         if {[lindex $args 0] eq "-noid"} {
             set noid 1
@@ -1354,6 +1391,11 @@ proc my_haObjectDiscovery {args} {
         }
         if {[lindex $args 0] eq "-retain"} {
             set retain 1
+            set args [lrange $args 1 end]
+            continue
+        }
+        if {[lindex $args 0] eq "-nodevice"} {
+            set nodevice 1
             set args [lrange $args 1 end]
             continue
         }
@@ -1378,13 +1420,13 @@ proc my_haObjectDiscovery {args} {
         lassign [mk::get cfg.x10!$row id name topic type object model] id name topic type object model
 #        if {$object in {var}} {continue}
         if {$ids eq "" || $id in $ids} {
-            sendDiscovery $noid $nous $retain $add $id $name $topic [expr {$flag_b == 1 ? "flag_b" : $object}] $model HomeVision
+            sendDiscovery $noid $nous $retain $nodevice $add $id $name $topic [expr {$flag_b == 1 ? "flag_b" : $object}] $model HomeVision
         }
     }
 }
 
 hvPublic sendDiscovery
-proc sendDiscovery {noid nous retain add id name topic object type  model {man "CustomSolutions"}} {
+proc sendDiscovery {noid nous retain nodevice add id name topic object type  model {man "CustomSolutions"}} {
     global cfg
     if {$object eq "x10"} {
         set fid [string map {" " -} [hvObjectId x10 $id]]
@@ -1399,12 +1441,20 @@ proc sendDiscovery {noid nous retain add id name topic object type  model {man "
     set objsuffix [string totitle $object]
     
     set uid $cfg(clientID)_$fid
+
+    regsub {<} $topic "/$cfg(statPrefix)/" stat
+    regsub {>} $stat "/RESULT/" stat
+    set stat [regsub {//+} [string trim $stat {/}] {/}]
+    regsub {<} $topic "/$cfg(cmndPrefix)/" cmnd
+    regsub {>} $cmnd "/$cfg(pwrPostfix)/" cmnd
+    set cmnd [regsub {//+} [string trim $cmnd {/}] {/}]
+
     set topic [string trim $topic "<>"]
     
     set discov {}
-    debug "$fid, $uid, $topic;"
+    debug "$fid, $uid, $topic, $cmnd, $stat;"
 
-    dict set discov unique_id $uid
+    dict set discov uniq_id $uid
     if {$nous == 1} {
         set name [string map {_ " "} $name]
     }
@@ -1413,131 +1463,133 @@ proc sendDiscovery {noid nous retain add id name topic object type  model {man "
     } else {
         dict set discov name "[string map {_ "-"} $fid] $name"
     }
-    dict set discov retain false
+    dict set discov ret false
     if {$retain == 1} {
-        dict set discov retain true
+        dict set discov ret true
     }
     dict set discov qos 1
-    dict set discov device [format {{"identifiers":["%s"],"name":"%s","model":"%s","manufacturer":"%s"}} "$cfg(clientID)_$objsuffix" "HomeVisionXL $objsuffix" $model $man]
+    if {$nodevice == 0} {
+        dict set discov dev [format {{"ids":["%s"],"name":"%s","mdl":"%s","mf":"%s"}} "$cfg(clientID)_$objsuffix" "HomeVisionXL $objsuffix" $model $man]
+    }
     
     switch $object {
         x10 -
         light -
         caseta {
-            dict set discov state_topic "stat/$topic/RESULT"
-            dict set discov command_topic "cmnd/$topic/POWER"
-            dict set discov payload_on "ON"
-            dict set discov payload_off "OFF"
-            if {$type in "app switch"} {
+            dict set discov "~" "$stat"
+            dict set discov stat_t "~"
+            dict set discov cmd_t "$cmnd"
+            dict set discov pl_on "ON"
+            dict set discov pl_off "OFF"
+            if {$type in {app switch}} {
                 set device "switch"
-                dict set discov value_template "{{ value_json.POWER }}"
+                dict set discov val_tpl "{{ value_json.$cfg(pwrPostfix) }}"
             } else {
                 set device "light"
-                dict set discov state_value_template "{{ value_json.POWER }}"
-                dict set discov brightness_command_topic "cmnd/$topic/POWER"
-                dict set discov brightness_state_topic "stat/$topic/RESULT"
-                dict set discov brightness_scale 100
-                dict set discov brightness_value_template "{{ value_json.Dimmer }}"
-                dict set discov on_command_type "brightness"
+                dict set discov stat_val_tpl "{{ value_json.$cfg(pwrPostfix) }}"
+                dict set discov bri_cmd_t "$cmnd"
+                dict set discov bri_stat_t "~"
+                dict set discov bri_scl 100
+                dict set discov bri_val_tpl "{{ value_json.Dimmer }}"
+                dict set discov on_cmd_type "brightness"
             }
         }
         flag {
             set device "switch"
-            dict set discov state_topic "stat/$topic/RESULT"
-            dict set discov value_template "{{ value_json.STATE }}"
-            dict set discov command_topic "cmnd/$topic/POWER"
-            dict set discov payload_on "Set"
-            dict set discov payload_off "Clear"
-            dict set discov state_on "Set"
-            dict set discov state_off "Clear"
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict set discov cmd_t "$cmnd"
+            dict set discov pl_on "Set"
+            dict set discov pl_off "Clear"
+            dict set discov stat_on "Set"
+            dict set discov stat_off "Clear"
         }
         flag_b {
             set device "binary_sensor"
-            dict set discov state_topic "stat/$topic/RESULT"
-            dict set discov value_template "{{ value_json.STATE }}"
-            dict set discov payload_on "Set"
-            dict set discov payload_off "Clear"
-            dict unset discov retain
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict set discov pl_on "Set"
+            dict set discov pl_off "Clear"
+            dict unset discov ret
             if {[regexp {dc:(\w+)} [hvObjectDesc flag $id] --> dc]} {
                 if {$dc ne ""} {
-                    dict set discov device_class $dc
+                    dict set discov dev_cla $dc
                 }
             }
         }
         output {
             set device "switch"
-            dict set discov state_topic "stat/$topic/RESULT"
-            dict set discov value_template "{{ value_json.STATE }}"
-            dict set discov command_topic "cmnd/$topic/POWER"
-            dict set discov payload_on "high"
-            dict set discov payload_off "low"
-            dict set discov state_on "[hvObjectLabel $object $id 1]"
-            dict set discov state_off "[hvObjectLabel $object $id 0]"
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict set discov cmd_t "$cmnd"
+            dict set discov pl_on "high"
+            dict set discov pl_off "low"
+            dict set discov stat_on "[hvObjectLabel $object $id 1]"
+            dict set discov stat_off "[hvObjectLabel $object $id 0]"
         }
         ir {
             set device "switch"
-            dict set discov state_topic "stat/$topic/RESULT"
-            dict set discov value_template "{{ value_json.STATE }}"
-            dict set discov command_topic "cmnd/$topic/POWER"
-            dict set discov payload_on "ON 1"
-            dict set discov payload_off "Off 1"
-            dict set discov state_on "ON"
-            dict set discov state_off "Unknown"
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict set discov cmd_t "$cmnd"
+            dict set discov pl_on "ON 1"
+            dict set discov pl_off "Off 1"
+            dict set discov stat_on "ON"
+            dict set discov stat_off "Unknown"
         }
         var {
             set device "sensor"
-            dict set discov state_topic "stat/$topic/RESULT"
-            dict set discov value_template "{{ value_json.STATE }}"
-            dict unset discov retain
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict unset discov ret
             if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
                 if {$dc ne ""} {
-                    dict set discov device_class $dc
+                    dict set discov dev_cla $dc
                 }
             }
         }
         analog {
             set device "sensor"
-            dict set discov state_topic "stat/$topic/RESULT"
-            dict set discov value_template "{{ value_json.STATE }}"
-            dict unset discov retain
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict unset discov ret
             if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
                 if {$dc ne ""} {
-                    dict set discov device_class $dc
+                    dict set discov dev_cla $dc
                 }
             }
         }
         temp {
             set device "sensor"
-            dict set discov state_topic "stat/$topic/RESULT"
-            dict set discov value_template "{{ value_json.STATE }}"
-            dict unset discov retain
-            debug [hvObjectDesc $object $id] red
-            if {[regexp {dc:(\w+)([\-F|\-C]*)} [hvObjectDesc $object $id] --> dc uom]} {
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict unset discov ret
+            dict set discov dev_cla "temperature"
+            if {[hvVariable TempScale] eq -1} {
+                dict set discov unit_of_meas "C"
+            } else {
+                dict set discov unit_of_meas "F"
+            }
+            if {[regexp {dc:(\w+)([\-F|\-f|\-C|\-c]*)} [hvObjectDesc $object $id] --> dc uom]} {
                 if {$dc ne ""} {
-                    dict set discov device_class $dc
+                    dict set discov dev_cla $dc
                     set uom [string index $uom 1]
-                    if {$uom in {F C}} {
-                        dict set discov unit_of_measurement "$uom"
-                    } else {
-                        dict set discov unit_of_measurement "F"
+                    if {$uom in {F f C c}} {
+                        dict set discov unit_of_meas [string toupper $uom]
                     }
- 
-                } else {
-                    dict set discov device_class "temperature"
-                    dict set discov unit_of_measurement "F"
                 }
             }
         }
         input {
             set device "binary_sensor"
-            dict set discov state_topic "stat/$topic/RESULT"
-            dict set discov value_template "{{ value_json.STATE }}"
-            dict set discov payload_on "[hvObjectLabel $object $id 0]"
-            dict set discov payload_off "[hvObjectLabel $object $id 1]"
-            dict unset discov retain
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict set discov pl_on "[hvObjectLabel $object $id 0]"
+            dict set discov pl_off "[hvObjectLabel $object $id 1]"
+            dict unset discov ret
             if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
                 if {$dc ne ""} {
-                    dict set discov device_class $dc
+                    dict set discov dev_cla $dc
                 }
             }
         }
@@ -1546,25 +1598,28 @@ proc sendDiscovery {noid nous retain add id name topic object type  model {man "
             dict set discov modes {["auto", "off", "cool", "heat"]}
             dict set discov fan_modes {["fanauto","fanon"]}
             dict set discov hold_modes {["run","hold"]}
-            dict set discov mode_command_topic "cmnd/Zone1/POWER"
-            dict set discov hold_command_topic "cmnd/Zone1/POWER"
-            dict set discov temperature_command_topic "cmnd/Zone1/POWER"
-            dict set discov fan_mode_command_topic "cmnd/Zone1/POWER"
-            dict set discov current_temperature_topic "stat/Zone1/RESULT"    
-            dict set discov current_temperature_template "{{ value_json.Temperature }}"   
-            dict set discov mode_state_topic "stat/Zone1/RESULT"
-            dict set discov mode_state_template "{{ value_json.HVAC|lower }}"   
-            dict set discov hold_state_topic "stat/Zone1/RESULT"
-            dict set discov hold_state_template "{{ value_json.Control|lower }}"   
-            dict set discov temperature_state_topic "stat/Zone1/RESULT"
-            dict set discov temperature_state_template "{{ value_json.Setpoint }}"   
-            dict set discov fan_mode_state_topic "stat/Zone1/RESULT"
-            dict set discov fan_mode_state_template "{{ \\\"fan\\\" + value_json.Fan|lower }}"   
-            dict set discov temperature_unit "F"
+            dict set discov mode_cmd_t "$cmnd"
+            dict set discov hold_cmd_t "$cmnd"
+            dict set discov temp_cmd_t "$cmnd"
+            dict set discov fan_mode_cmd_t "$cmnd"
+            dict set discov "~" "$stat"
+            dict set discov curr_temp_t "~"
+            dict set discov curr_temp_tpl "{{ value_json.Temperature }}"   
+            dict set discov mode_stat_t "~"
+            dict set discov mode_stat_tpl "{{ value_json.HVAC|lower }}"   
+            dict set discov hold_stat_t "~"
+            dict set discov hold_stat_tpl "{{ value_json.Control|lower }}"   
+            dict set discov temp_stat_t "~"
+            dict set discov temp_stat_tpl "{{ value_json.Setpoint }}"   
+            dict set discov fan_mode_stat_t "~"
+            dict set discov fan_mode_stat_tpl "{{ \\\"fan\\\" + value_json.Fan|lower }}"   
+            dict set discov temp_unit "F"
             dict set discov precision 1.0
             dict set discov max_temp 99
             dict set discov min_temp 55
-            dict set discov device [format {{"identifiers":["%s"],"name":"%s","model":"TX-15","manufacturer":"RCS"}} "$cfg(clientID)_$objsuffix" "HomeVisionXL $objsuffix"]
+           if {$nodevice == 0} {
+                dict set discov dev [format {{"ids":["%s"],"name":"%s","mdl":"TX-15","mf":"RCS"}} "$cfg(clientID)_$objsuffix" "HomeVisionXL $objsuffix"]
+            }
         }
         default {
             return
@@ -1573,17 +1628,17 @@ proc sendDiscovery {noid nous retain add id name topic object type  model {man "
 
     foreach key [dict keys $discov] {
         switch $key {
-            brightness_scale -
+            bri_scale -
             max_temp -
             min_temp -
             qos {
                 set fmt {"%s":%d}
             }
             precision -
-            retain -
+            ret -
             modes -
             fan_modes -
-            device -
+            dev -
             hold_modes {
                 set fmt {"%s":%s}
             }
@@ -2295,6 +2350,8 @@ proc cfg_mqtt {} {
     ttk::label .mqtt.f.f2.l16 -text "Password:" -anchor e
     ttk::entry .mqtt.f.f2.e16 -width 25 -justify center -textvariable cfg(password) -show *
 
+    ttk::separator .mqtt.f.f2.sep2
+    
     ttk::checkbutton .mqtt.f.f2.c31 -variable cfg(logging) -text "Create log file" -command cfg_logsel
     ttk::label .mqtt.f.f2.l31 -text "Log Folder:" -anchor e
     ttk::entry .mqtt.f.f2.e31  -textvariable cfg(logpath) -state readonly
@@ -2350,11 +2407,13 @@ proc cfg_mqtt {} {
     grid .mqtt.f.f2.l42 .mqtt.f.f2.r42 .mqtt.f.f2.r44 -sticky n
     grid configure .mqtt.f.f2.l42 -sticky nes -padx 3
 
+    grid .mqtt.f.f2.sep2 -column 0 -columnspan 3 -sticky ew -padx 3 -pady 3
+
     grid x .mqtt.f.f2.c31 -sticky nws  -padx 3 -pady 1
     grid .mqtt.f.f2.l31 .mqtt.f.f2.e31 .mqtt.f.f2.b31 -sticky we -padx 3
     grid .mqtt.f.f2.l33 .mqtt.f.f2.e33 -sticky we -padx 3
 
-    grid .mqtt.f.f2.sep -column 0 -columnspan 2 -sticky ew -padx 3 -pady 3
+    grid .mqtt.f.f2.sep -column 0 -columnspan 3 -sticky ew -padx 3 -pady 3
 
     grid .mqtt.f.f2.l9 .mqtt.f.f2.e9   -sticky nws -padx 3
     grid configure .mqtt.f.f2.l9      -sticky nes -padx 3
@@ -2376,8 +2435,7 @@ proc cfg_mqtt {} {
     # Discovery Tab
     ttk::frame .mqtt.f.f4
     ttk::label .mqtt.f.f4.l1 -text "Object Type:"
-    ttk::combobox .mqtt.f.f4.c1 -state readonly -width 10 \
-      -values {All x10 light var flag flag_b input output analog temp ir hvac caseta}
+    ttk::combobox .mqtt.f.f4.c1 -state readonly -width 10 -values [createList]
     ttk::frame .mqtt.f.f4.ni
     ttk::frame .mqtt.f.f4.ni.f
     ttk::label .mqtt.f.f4.l2 -text "Choose Object(s)"
@@ -2402,12 +2460,14 @@ proc cfg_mqtt {} {
     ttk::checkbutton .mqtt.f.f4.c5 -variable nous
     ttk::label .mqtt.f.f4.l6 -text "Retain Flag for HA published msgs?"
     ttk::checkbutton .mqtt.f.f4.c6 -variable yesretain
+    ttk::label .mqtt.f.f4.l7 -text "Exclude from Device?"
+    ttk::checkbutton .mqtt.f.f4.c7 -variable nodevice
     bind .mqtt.f.f4.c1 <<ComboboxSelected>> createObjects
-    ttk::button .mqtt.f.f4.b1 -text "Run Discovery"  -width 20  -command runDiscovery
+    ttk::button .mqtt.f.f4.b1 -text "Run Discovery" -width 20 -command runDiscovery
 
     grid .mqtt.f.f4.l1 .mqtt.f.f4.c1 -sticky nws -padx 3 -pady 10
     grid configure .mqtt.f.f4.l1     -sticky nes -padx 3
-    grid .mqtt.f.f4.ni.f  -padx 4 -pady 4 -sticky wens
+    grid .mqtt.f.f4.ni.f             -sticky wens -padx 4 -pady 4
     grid .mqtt.f.f4.l2 .mqtt.f.f4.ni -sticky news -padx 3
     grid rowconfigure .mqtt.f.f4.ni .mqtt.f.f4.ni.f -weight 1
     grid configure .mqtt.f.f4.l2     -sticky nes -padx 3
@@ -2419,18 +2479,21 @@ proc cfg_mqtt {} {
     grid configure .mqtt.f.f4.l5     -sticky nes -padx 3
     grid .mqtt.f.f4.l6 .mqtt.f.f4.c6 -sticky nws -padx 3 -pady 10
     grid configure .mqtt.f.f4.l6     -sticky nes -padx 3
-    grid  .mqtt.f.f4.b1  -columnspan 2 -padx {4 13} -pady {2 15}
+    grid .mqtt.f.f4.l7 .mqtt.f.f4.c7 -sticky nws -padx 3 -pady 10
+    grid configure .mqtt.f.f4.l7     -sticky nes -padx 3
+    grid .mqtt.f.f4.b1  -columnspan 2 -padx {4 13} -pady {2 15}
     grid rowconfigure .mqtt.f.f4 .mqtt.f.f4.ni -weight 1
     grid columnconfigure .mqtt.f.f4 1 -weight 1
     grid .mqtt.f.f4 -sticky news  -padx 5 -pady 5
 
+    .mqtt.f.f4.c1 current 0
     createObjects
-
+    
     .mqtt.f.f4.c3 set "Test"
     
     .mqtt.f add .mqtt.f.f4 -text "Discovery" -state hidden
 
-    grid .mqtt.f    -sticky snew    -padx 5 -pady 5 -columnspan 3
+    grid .mqtt.f -sticky snew -padx 5 -pady 5 -columnspan 3
 
     ttk::button .mqtt.b3 -text Done -width 8 -command cfg_done \
         -image [imglist ok] -compound left
@@ -3702,7 +3765,7 @@ proc cfg_object_copy {} {
     if {$mqttid >= 256} {return}
 
     if {$mqttobj eq "hvac"} {
-        set name "Zone $idx"
+        set name "Zone_$mqttid"
     } else {
         set name [hvObjectName $mqttobj $mqttid]
     }
@@ -3816,11 +3879,11 @@ proc getid {type grp num} {
     set cnt [hvObjectCount $type]
     set i 0
     while {$cnt > $i} {
-	if {[string tolower [string index [hvObjectId $type $i] 0]] \
-	 eq [string tolower $grp]} {
-	    return [expr {$i + $num - 1}]
-	}
-	incr i $max
+        if {[string tolower [string index [hvObjectId $type $i] 0]] \
+         eq [string tolower $grp]} {
+            return [expr {$i + $num - 1}]
+        }
+        incr i $max
     }
     return -1
 }
@@ -4006,8 +4069,8 @@ proc cinit {} {
         }
     }
     if {[hvObjectCount temp] > 0} {
-        hvEventHook digitaltempupdate [list objupdate $object]
-        action $object update
+        hvEventHook digitaltempupdate [list objupdate temp]
+        action temp update
     }
 }
 

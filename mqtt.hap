@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.102 $
-# $Date: 2021/03/27 19:36:59 $
+# $Revision: 1.103 $
+# $Date: 2021/04/06 17:54:09 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.102 2021/03/27 19:36:59 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.103 2021/04/06 17:54:09 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -106,7 +106,7 @@ set nodevice 0
 # define mqtt log command
 if {[package require mqtt] >= 2} {
     mqtt log [list apply [list str {
-        if {$::logmqtt == 0 && [regexp {PUBACK|SUBACK} $str]} {return}
+        if {$::logmqtt == 0 && [regexp {PUBACK|SUBACK|PINGREQ|PINGRESP} $str]} {return}
         debug $str green
     }]]
 } else {
@@ -1147,7 +1147,8 @@ proc subscribe {{type sub}} {
         lassign [mk::get $row topic cmnd lwt cmdtrig trigstdcus] topic cmnd lwt cmdtrig trigstdcus
         if {$topic ne ""} {
             set cmnd [customCmnd $cmnd $cmdtrig $trigstdcus]
-            if {$lwt && [regexp {<} $topic] && [regexp {>[0-9]*} $topic]} {
+            if {$lwt ne "" && $lwt \
+                && [regexp {<} $topic] && [regexp {>[0-9]*} $topic]} {
                 # subscribe to lwt only if standard topic and lwt flag set
                 sendMqtt $type tele $topic LWT $cmnd
             }
@@ -1265,7 +1266,7 @@ proc sendMqtt {action pre topic post cmd args} {
         mqttLog "tx: $topic $cmd"
     }
 }
-hvImport getDiscovDevices
+
 proc createObjects {} {
     global discovDevices
 
@@ -1310,15 +1311,17 @@ proc createObjects {} {
     }
 }
 
+hvImport getDiscovDevices
 proc createList {} {
     global discovDevices
 
+    set values {All x10 light var flag flag_b input output analog temp ir hvac}
     set discovDevices [getDiscovDevices]
+    set tmp {}
     for {set i 0} {$i < [llength $discovDevices]} {incr i} {
         dict set tmp {*}[lindex $discovDevices $i]
     }
     set discovDevices $tmp
-    set values {All x10 light var flag flag_b input output analog temp ir hvac}
     foreach obs [dict keys $discovDevices] {
         lappend values $obs
     }
@@ -1449,7 +1452,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
     regsub {>} $cmnd "/$cfg(pwrPostfix)/" cmnd
     set cmnd [regsub {//+} [string trim $cmnd {/}] {/}]
 
-    set topic [string trim $topic "<>"]
+#    set topic [string trim $topic "<>"]
     
     set discov {}
     debug "$fid, $uid, $topic, $cmnd, $stat;"

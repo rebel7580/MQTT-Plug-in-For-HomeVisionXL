@@ -10,6 +10,11 @@ assignees: ''
 **Describe the bug**
 A clear and concise description of what the bug is.
 
+**Environment**
+ - OS (Win/Linux):
+ - HomveVisionXL Version: 
+ - Plug-in Revision:
+
 **To Reproduce**
 Steps to reproduce the behavior:
 1. 
@@ -29,11 +34,5 @@ If applicable, add screenshots to help explain your problem.
 **Errors, if Any**
 Copy relevant portion of error.log (in ~/bin for Linux, in folder containing Homevisoin.exe for Windows.)
 
-**Environment**
- - OS (Win/Linux):
- - HomveVisionXL Version: 
- - Plug-in Revision:
-
 **Additional context**
 Add any other context about the problem here.
-

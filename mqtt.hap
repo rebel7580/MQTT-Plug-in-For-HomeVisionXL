@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.103 $
-# $Date: 2021/04/06 17:54:09 $
+# $Revision: 1.104 $
+# $Date: 2021/06/09 01:22:13 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.103 2021/04/06 17:54:09 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.104 2021/06/09 01:22:13 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -138,12 +138,8 @@ proc connect {} {
 hvImport mqttReady
 proc mqttStatusrecv {topic payload retain} {
 
-    debug "mqttStatus:$payload;" red
-    set state [dict get $payload state]
-    if {$state eq "disconnected"} {
-        lappend state [dict get $payload reason]
-    }
-    mqttReady $state
+    mqttLog "mqttStatus:$payload;" red     
+    mqttReady $payload
 }
 
 proc disconnect {} {
@@ -153,7 +149,7 @@ proc disconnect {} {
     if {[info exists mymqtt] && $mymqtt ne ""} {
         subscribe unsub
         $mymqtt disconnect
-        mqttReady disconnected 0
+        mqttReady [dict create state disconnected reason 0]
     }
 }
 
@@ -949,6 +945,7 @@ proc triggers {row topic msg state lvl} {
     }
     set cmd [string map [list \
              %O $topic \
+             %m [string map {\" '} $msg] \
              %M $msg \
              %L $lvl \
              %X [expr {round(floor(16 * $lvl / 100))}] \
@@ -1313,11 +1310,21 @@ proc createObjects {} {
 
 hvImport getDiscovDevices
 proc createList {} {
-    global discovDevices
+    global discovDevices objtypes
 
-    set values {All x10 light var flag flag_b input output analog temp ir hvac}
+    set values {All}
+    foreach obs [dict keys $objtypes] {
+        if {[hvObjectCount $obs] > 0} {
+            lappend values $obs
+            if {$obs eq "flag"} {
+                lappend values "flag_b"
+            }
+        }
+    }
+
     set discovDevices [getDiscovDevices]
     set tmp {}
+    debug "returned devices:$discovDevices;"
     for {set i 0} {$i < [llength $discovDevices]} {incr i} {
         dict set tmp {*}[lindex $discovDevices $i]
     }
@@ -1326,6 +1333,20 @@ proc createList {} {
         lappend values $obs
     }
     return $values
+}
+
+hvPublic getDiscovConfig
+proc getDiscovConfig {} {
+    global cfg
+
+    return [list clientID $cfg(clientID) \
+        cmndPrefix  $cfg(cmndPrefix) \
+        statPrefix  $cfg(statPrefix) \
+        telePrefix  $cfg(telePrefix) \
+        pwrPostfix  $cfg(pwrPostfix) \
+        rstPostfix  $cfg(rstPostfix) \
+        LWTPostfix  $cfg(LWTPostfix) \
+    ]
 }
 
 proc runDiscovery {} {
@@ -1373,7 +1394,7 @@ proc runDiscovery {} {
 hvImport -name my_haObjectDiscovery haObjectDiscovery
 hvPublic haObjectDiscovery
 proc haObjectDiscovery {args} {
-    global cfg objtypes
+    global cfg
 
     debug "HA Discovery:$args;"
     set ids ""
@@ -1406,37 +1427,38 @@ proc haObjectDiscovery {args} {
     }
     set flag_b 0
     set args [lassign $args add]
+    set obs [createList]
     if {$args eq ""} {
-        set match [join [dict keys $objtypes] |]
+        set match [join $obs |]
     } else {
         set ids [lassign $args otype]
         set match [string tolower $otype]
         if {$match eq "flag_b"} {
             set match "flag"
             set flag_b 1
-        } elseif {$match ni [dict keys $objtypes]} {
+        } elseif {$match ni $obs} {
             return
         }
     }
     debug "Objects: $match, ids:$ids;" red
     foreach row [mk::select cfg.x10 -regexp object $match -sort object] {
         lassign [mk::get cfg.x10!$row id name topic type object model] id name topic type object model
-#        if {$object in {var}} {continue}
         if {$ids eq "" || $id in $ids} {
             sendDiscovery $noid $nous $retain $nodevice $add $id $name $topic [expr {$flag_b == 1 ? "flag_b" : $object}] $model HomeVision
         }
     }
 }
 
-hvPublic sendDiscovery
+#hvPublic sendDiscovery
 proc sendDiscovery {noid nous retain nodevice add id name topic object type  model {man "CustomSolutions"}} {
     global cfg
+
     if {$object eq "x10"} {
-        set fid [string map {" " -} [hvObjectId x10 $id]]
+        set fid [string map {" " _} [hvObjectId x10 $id]]
     } elseif {$object in {input output}} {
         set fid [string toupper [string index $object 0]][hvObjectId $object $id]
     } else {
-        set fid "[string toupper [string range $object 0 1]]-$id"
+        set fid "[string toupper [string range $object 0 1]]_$id"
     }
     if {$object eq "flag_b"} {
         append fid "b"
@@ -1452,8 +1474,6 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
     regsub {>} $cmnd "/$cfg(pwrPostfix)/" cmnd
     set cmnd [regsub {//+} [string trim $cmnd {/}] {/}]
 
-#    set topic [string trim $topic "<>"]
-    
     set discov {}
     debug "$fid, $uid, $topic, $cmnd, $stat;"
 
@@ -1477,8 +1497,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
     
     switch $object {
         x10 -
-        light -
-        caseta {
+        light {
             dict set discov "~" "$stat"
             dict set discov stat_t "~"
             dict set discov cmd_t "$cmnd"
@@ -1637,11 +1656,11 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             qos {
                 set fmt {"%s":%d}
             }
-            precision -
             ret -
+            dev -
+            precision -
             modes -
             fan_modes -
-            dev -
             hold_modes {
                 set fmt {"%s":%s}
             }

@@ -1,3 +1,5 @@
+<b>You must have a HomeVision or HomeVision Pro Controller running HomeVisionXL software for this to work.</b>
+
 **Please report issues via the homevision users group**
 
 # Overview

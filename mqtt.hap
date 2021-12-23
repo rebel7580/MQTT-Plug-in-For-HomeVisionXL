@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.104 $
-# $Date: 2021/06/09 01:22:13 $
+# $Revision: 1.107 $
+# $Date: 2021/12/22 23:00:37 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.104 2021/06/09 01:22:13 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.107 2021/12/22 23:00:37 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -49,6 +49,10 @@ array set cfg {
     inputEnable  0
     outputEnable 0
     irEnable     0
+    macroEnable  0
+    seEnable     0
+    peEnable     0
+    timerEnable  0
     listWidths  {0 0 0}
     logging      0
     logpath      ""
@@ -80,6 +84,10 @@ set objtypes {
     input  {order 8 on ""   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle ""}
     output {order 9 on high off low   toggle toggle state state set high clear low   setto ""  cycle ""     high high low low}
     ir     {order a on on   off ""    toggle ""     state state set ""   clear ""    setto on  cycle ""}
+    macro  {order b on on   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle "" run run}
+    se     {order c on on   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle "" run run}
+    pe     {order d on on   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle "" run run}
+    timer  {order e on on   off ""    toggle ""     state state set ""   clear ""    setto ""  cycle "" start start stop stop clear clear load load}
 }
 
 set updtfp  {
@@ -133,6 +141,7 @@ proc connect {} {
     }
     $mymqtt connect $cfg(clientID) $cfg(broker) $cfg(brokerPort)
     $mymqtt subscribe {$SYS/local/connection} mqttStatusrecv
+#    $mymqtt subscribe {$SYS/local/publication} mqttPublishrecv
 }
 
 hvImport mqttReady
@@ -140,6 +149,11 @@ proc mqttStatusrecv {topic payload retain} {
 
     mqttLog "mqttStatus:$payload;" red     
     mqttReady $payload
+}
+
+proc mqttPublishrecv {topic payload retain} {
+
+    debug "mqttPublish:[dict get $payload topic],[dict get $payload data];" red     
 }
 
 proc disconnect {} {
@@ -506,7 +520,11 @@ proc subrecv {topic msg {retain 0}} {
                             debug "No payload: $topic:$msg;" red
                             set objstat [getStatus $row]
                             debug "id:$id,object:$object;topic:$dtopic;objstat:$objstat" red
+                            if {$object eq "timer"} {
+                                set cmd [status_Timer $id]
+                            } else {
                             set cmd [dict get $objstat cmd]
+                            }
                             if {$cfg(pwrStatResponse)} {
                                 sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
                             }
@@ -521,6 +539,8 @@ proc subrecv {topic msg {retain 0}} {
                                         set dim 0
                                     }
                                     lappend rcmd $cfg(pwrPostfix)$idx $cmd
+                                } elseif {$object eq "timer"} {
+                                    set rcmd [list "STATE" [lindex $cmd 0] "TIME" [lrange $cmd 1 end]]
                                 } else {
                                     lappend rcmd "STATE" $cmd
                                 }
@@ -562,7 +582,7 @@ proc subrecv {topic msg {retain 0}} {
                                 }
                                 sendMqtt pub stat $dtopic rst [setResponse $rcmd] [expr {($loglevel & 0x02)>>1}] $retain
                             }
-                        } elseif {$payload in {on off toggle set clear low high}} {
+                        } elseif {$payload in {on off toggle set clear low high run start stop clear}} {
                             if {[dict get $objtypes $object $payload] eq ""} {
                                 debug "$object: $type, $resp, $payload not supported." red
                             } elseif {$object eq "var"} {
@@ -602,6 +622,26 @@ proc subrecv {topic msg {retain 0}} {
                                     sendMqtt pub stat $dtopic rst [setResponse [list "STATE" $val]] [expr {($loglevel & 0x02)>>1}] 0
                                 }
                                 action ir transmit $id 1
+                            } elseif {$object in {macro se pe}} {
+                                if {$payload ni {on run}} {return}
+                                set cmd "Unknown"
+                                if {$cfg(pwrStatResponse)} {
+                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] 0
+                                }
+                                if {$cfg(rstStatResponse)} {
+                                    sendMqtt pub stat $dtopic rst [setResponse [list "STATE" $cmd]] [expr {($loglevel & 0x02)>>1}] 0
+                                }
+                                action $object run $id
+                            } elseif {$object in {timer}} {
+                                if {$payload ni {start stop clear}} {return}
+                                action $object $payload $id
+                                set cmd [status_Timer $id]
+                                if {$cfg(pwrStatResponse)} {
+                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] 0
+                                }
+                                if {$cfg(rstStatResponse)} {
+                                    sendMqtt pub stat $dtopic rst [setResponse [list "STATE" [lindex $cmd 0] "TIME" [lrange $cmd 1 end]]] [expr {($loglevel & 0x02)>>1}] 0
+                                }
                             } else {
                                 if {$object eq "flag"} {
                                     if {$payload eq "toggle"} {
@@ -791,6 +831,16 @@ proc subrecv {topic msg {retain 0}} {
                                     action var set $id [expr {0xff & $val}]
                                     action var update
                                 }
+                            } elseif {$st eq "load" && $object eq "timer"} {
+                                set sval 1
+                                action $object load $id {*}[lrange $payload 1 end]
+                                set cmd [status_Timer $id]
+                                if {$cfg(pwrStatResponse)} {
+                                    sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] 0
+                                }
+                                if {$cfg(rstStatResponse)} {
+                                    sendMqtt pub stat $dtopic rst [setResponse [list "STATE" [lindex $cmd 0] "TIME" [lrange $cmd 1 end]]] [expr {($loglevel & 0x02)>>1}] 0
+                                }
                             }
                         }
                     }
@@ -877,32 +927,43 @@ proc hvrecv {fulltopic msg {retain 0}} {
             return
         }
     }
-    set pos [lsearch -exact $objs "ir"]
+    # don't report on ir, se, pe, macro
+    foreach ob {ir se pe macro} {
+        set pos [lsearch -exact $objs $ob]
     set objs [lreplace $objs $pos $pos]
+    }
     set match [join $objs |]
     if {$match eq ""} {
         return
     }
     foreach row [mk::select cfg.x10 -regexp object $match -sort object] {
         set objstat [getStatus $row]
-        lassign [mk::get cfg.x10!$row topic object loglevel retain] otopic object loglevel retain
+        lassign [mk::get cfg.x10!$row id topic object loglevel retain model] id otopic object loglevel retain model
+        if {$object eq "timer"} {
+            set cmd [status_Timer $id]
+        } else {
         set cmd [dict get $objstat cmd]
+        }
         if {$cfg(pwrStatResponse)} {
             sendMqtt pub stat $otopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
         }
         if {$cfg(rstStatResponse)} {
+            set dim 1
             set rcmd {}
             if {$object eq "hvac"} {
                 foreach k {Control HVAC Fan Temperature Setpoint} v $cmd {
                     lappend rcmd $k $v
                 }
             } elseif {$object in {x10 light}} {
+                if {$model eq "app"} {set dim 0}
                 if {![regexp {>([0-9]+)} $otopic --> idx]} {set idx ""}
                 lappend rcmd $cfg(pwrPostfix)$idx $cmd
+            } elseif {$object eq "timer"} {
+                set rcmd [list "STATE" [lindex $cmd 0] "TIME" [lrange $cmd 1 end]]
             } else {
                 lappend rcmd "STATE" $cmd
             }
-            sendMqtt pub stat $otopic rst [setResponse $rcmd] [expr {($loglevel & 0x02)>>1}] $retain
+            sendMqtt pub stat $otopic rst [setResponse $rcmd $dim] [expr {($loglevel & 0x02)>>1}] $retain
         }
     }
 }
@@ -995,7 +1056,7 @@ proc getStatus {row} {
         }
         set cmd $newstate
         set newlevel "-"
-    } elseif {$object eq "ir"} {
+    } elseif {$object in {ir macro se pe timer}} {
         set newstate "Unknown"
         set cmd "Unknown"
         set newlevel "-"
@@ -1085,6 +1146,31 @@ proc setResponse {keyval {dim 1}} {
     }
     append result "\}"
     return $result
+}
+proc status_Timer {idx} {
+    upd_Timers
+    set ststr [hvStateString timer $idx]
+    if {[string length $ststr]} {
+        return $ststr
+    } else {
+        return "Unknown"
+    }
+}
+
+#! Update Timer state information
+proc upd_Timers {} {
+    set data [hvSendCommand ,E03]
+    foreach line [split $data \n] {
+        if {![llength $line]} continue
+        set rec ""
+        foreach n [lrange $line 2 7] {
+            lappend rec [scan $n %x]
+        }
+        set num [lindex $rec 1]
+        hvObjectState timer $num [lreplace $rec 1 1]
+    }
+    hvLastUpdate timer 1
+    return
 }
 
 proc devupdate {} {
@@ -1324,7 +1410,6 @@ proc createList {} {
 
     set discovDevices [getDiscovDevices]
     set tmp {}
-    debug "returned devices:$discovDevices;"
     for {set i 0} {$i < [llength $discovDevices]} {incr i} {
         dict set tmp {*}[lindex $discovDevices $i]
     }
@@ -1445,6 +1530,9 @@ proc haObjectDiscovery {args} {
         lassign [mk::get cfg.x10!$row id name topic type object model] id name topic type object model
         if {$ids eq "" || $id in $ids} {
             sendDiscovery $noid $nous $retain $nodevice $add $id $name $topic [expr {$flag_b == 1 ? "flag_b" : $object}] $model HomeVision
+            if {$object eq "timer"} {
+            sendDiscovery $noid $nous $retain $nodevice $add $id $name $topic "timer_t" $model HomeVision
+            }
         }
     }
 }
@@ -1454,16 +1542,26 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
     global cfg
 
     if {$object eq "x10"} {
-        set fid [string map {" " _} [hvObjectId x10 $id]]
+        set fid [string map {" " -} [hvObjectId x10 $id]]
     } elseif {$object in {input output}} {
         set fid [string toupper [string index $object 0]][hvObjectId $object $id]
     } else {
-        set fid "[string toupper [string range $object 0 1]]_$id"
+        set fid "[string toupper [string range $object 0 1]]-$id"
     }
+    
+    set objsuffix [string totitle $object]
+
     if {$object eq "flag_b"} {
         append fid "b"
     }
-    set objsuffix [string totitle $object]
+    if {$object eq "timer_t"} {
+        append name "_time"
+        append fid "t"
+        set objsuffix [string totitle "timer"]
+    }
+    if {$object eq "timer"} {
+        append name "_state"
+    }
     
     set uid $cfg(clientID)_$fid
 
@@ -1478,6 +1576,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
     debug "$fid, $uid, $topic, $cmnd, $stat;"
 
     dict set discov uniq_id $uid
+
     if {$nous == 1} {
         set name [string map {_ " "} $name]
     }
@@ -1559,12 +1658,46 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov stat_on "ON"
             dict set discov stat_off "Unknown"
         }
+        macro -
+        se -
+        pe {
+            set device "switch"
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict set discov cmd_t "$cmnd"
+            dict set discov pl_on "Run"
+            dict set discov pl_off "Off"
+            dict set discov stat_on "ON"
+            dict set discov stat_off "Unknown"
+        }
         var {
             set device "sensor"
             dict set discov stat_t "$stat"
             dict set discov val_tpl "{{ value_json.STATE }}"
             dict unset discov ret
             if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
+                if {$dc ne ""} {
+                    dict set discov dev_cla $dc
+                }
+            }
+        }
+        timer {
+            set device "sensor"
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict unset discov ret
+            if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
+                if {$dc ne ""} {
+                    dict set discov dev_cla $dc
+                }
+            }
+        }
+        timer_t {
+            set device "sensor"
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.TIME }}"
+            dict unset discov ret
+            if {[regexp {dc:(\w+)} [hvObjectDesc timer $id] --> dc]} {
                 if {$dc ne ""} {
                     dict set discov dev_cla $dc
                 }
@@ -2288,9 +2421,14 @@ proc cfg_mqtt {} {
     ttk::checkbutton .mqtt.f.f3.ni.fo.c8 -text "Inputs" -variable cfg(inputEnable) -command {cfg_objenable input}
     ttk::checkbutton .mqtt.f.f3.ni.fo.c9 -text "Outputs" -variable cfg(outputEnable) -command {cfg_objenable output}
     ttk::checkbutton .mqtt.f.f3.ni.fo.c10 -text "IR" -variable cfg(irEnable) -command {cfg_objenable ir}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c11 -text "Macros" -variable cfg(macroEnable) -command {cfg_objenable macro}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c12 -text "Scheduled Events" -variable cfg(seEnable) -command {cfg_objenable se}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c13 -text "Periodic Events" -variable cfg(peEnable) -command {cfg_objenable pe}
+    ttk::checkbutton .mqtt.f.f3.ni.fo.c14 -text "Timers" -variable cfg(timerEnable) -command {cfg_objenable timer}
 
     grid .mqtt.f.f3.ni.fo.c1 .mqtt.f.f3.ni.fo.c3 .mqtt.f.f3.ni.fo.c4 .mqtt.f.f3.ni.fo.c8 .mqtt.f.f3.ni.fo.c9  -sticky news -padx 3
     grid .mqtt.f.f3.ni.fo.c2 .mqtt.f.f3.ni.fo.c5 .mqtt.f.f3.ni.fo.c6 .mqtt.f.f3.ni.fo.c7 .mqtt.f.f3.ni.fo.c10  -sticky news -padx 3
+    grid .mqtt.f.f3.ni.fo.c11 .mqtt.f.f3.ni.fo.c12 .mqtt.f.f3.ni.fo.c13 .mqtt.f.f3.ni.fo.c14  -sticky news -padx 3
     grid .mqtt.f.f3.ni.fo -columnspan 3 -sticky ew -padx 5 -pady 5
 
     grid columnconfigure .mqtt.f.f3.ni.fo all -weight 1
@@ -3036,7 +3174,7 @@ proc cfg_object_add {} {
             set newstate "-"
         } elseif {$mqttobj eq "flag"} {
             set newlevel "-"
-        } elseif {$mqttobj eq "ir"} {
+        } elseif {$mqttobj in {ir macro se pe timer}} {
             set newlevel "-"
             set newstate "-"
         } elseif {$mqttobj in {input output}} {
@@ -3445,6 +3583,18 @@ proc cfg_object_chgdlg {} {
         } elseif {$grp eq "IR"} {
             set mqttid $num
             set mqttobj "ir"
+        } elseif {$grp eq "MA"} {
+            set mqttid $num
+            set mqttobj "macro"
+        } elseif {$grp eq "SE"} {
+            set mqttid $num
+            set mqttobj "se"
+        } elseif {$grp eq "PE"} {
+            set mqttid $num
+            set mqttobj "pe"
+        } elseif {$grp eq "TI"} {
+            set mqttid $num
+            set mqttobj "timer"
         } elseif {[regexp {^I[A-Q]$} $grp]} {
             set mqttid [getid input [string index $grp 1] $num]
             set mqttobj "input"
@@ -3879,6 +4029,18 @@ proc cfg_object_set {w vid vobj} {
         } elseif {$grp eq "IR"} {
             set id $num
             set object "ir"
+        } elseif {$grp eq "MA"} {
+            set id $num
+            set object "macro"
+        } elseif {$grp eq "SE"} {
+            set id $num
+            set object "se"
+        } elseif {$grp eq "PE"} {
+            set id $num
+            set object "pe"
+        } elseif {$grp eq "TI"} {
+            set id $num
+            set object "timer"
         } elseif {[regexp {^I[A-Q]$} $grp]} {
             set id [getid input [string index $grp 1] $num]
             set object "input"
@@ -3927,7 +4089,7 @@ proc createobjlist {widget {object ""}} {
             incr i
         }
     }
-    foreach obj {light flag var ir hvac temp analog} {
+    foreach obj {light flag var ir hvac temp analog macro se pe timer} {
         if {$cfg(${obj}Enable) || $object eq $obj} {
             set offset [expr {$offset + $cnt}]
             dict set objlist $obj offset $offset

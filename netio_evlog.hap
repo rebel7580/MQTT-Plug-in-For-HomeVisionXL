@@ -1,0 +1,312 @@
+#! Event Log Custom Object for NetIO - Ron Boston
+#
+# Version: 1.1
+# $Revision: 1.11 $
+# $Date: 2021/10/31 19:24:06 $
+# $Requires: HomeVisionXL 2.1 $
+
+# Sample NetIO page (Only relevant attributes shown)
+# Assumes: log length = 20; start line = 237; mode length.
+# Area for log lines:
+#     "type": "label"
+#     "reads": "get evlog lines"
+#     "interval": 60000
+# 
+# Slider to adjust starting line:
+#   If length is other than 20, set maxValue to 257 - length
+#     "type": "slider"
+#     "minValue": 1
+#     "maxValue": 237
+#     "showValue": true
+#     "release": "netioaction evlog start {value}"
+#     "reads": "get evlog start"
+#     "interval": 60000
+# 
+# Buttons for Update, Previous, Next, First, Last
+#  (use only those you want):
+#     "type": "button"
+#     "label": "Update Log"
+#     "sends": "netioaction evlog update"
+# 
+#     "type": "button"
+#     "label": "Previous"
+#     "sends": ["netioaction evlog prev"
+# 
+#     "type": "button"
+#     "label": "Next"
+#     "sends": "netioaction evlog next"
+# 
+#     "type": "button"
+#     "label": "First"
+#     "sends": "netioaction evlog first"
+# 
+#     "type": "button"
+#     "label": "Last"
+#     "sends": "netioaction evlog last"
+
+hvImport debug
+
+set logMap {00 30 01 31 02 32 03 33 04 34 05 35 06 36 07 37 08 38 09 39 0A 20 0D 20 0F 2C 10 20}
+set logFetch 0
+set logLast 0
+set logStart 237
+set logLength 20
+set logMode "length"
+set afterTimers {
+    log  {after "dummy" time 20}
+}
+
+#! evlog processor for netio get
+#
+# get evlog lines {length {start}}.
+#   Get log lines.
+#   Check for new log entries. If any, read them, then return log lines.
+#   Uses previously set length and start unless specified.
+#   If specified, length and start are updated to the new values.
+#   Note 1: log data returned contains embedded newlines. For this to work
+#   properly, change termination character to "\r" per help pages.
+#   Note 2: Unless used in a page's "sendOnAppear" attribute, setting a
+#   start value in this command will likely result in view of the log that
+#   is "fixed" to this start line. Even if "start" is changed by the slider or nav buttons
+#   periodic gets of this command will revert "start" back to the specified value.
+# get evlog length
+#   Get current length (1 - 256).
+# get evlog start
+#   Get current start (1 - 256*).
+#   Starting line may be adjusted to (257 - length) if
+#   it is closer than "length" to the end.
+# get evlog mode
+#   Get current mode ("all" or "length").
+#   "all" means get entire log at once.
+#   "length" means get only length entries.
+#
+# netio evlog item length start
+hvPublic netio
+proc netio {type args} {
+    global logState logFetch logLength logStart logMode logLast afterTimers
+
+    if {$type ne "evlog"} return ""
+    lassign $args cat l o
+    debug "evlog Netio $type $cat $args" blue
+
+    switch $cat {
+        lines {
+            checklast
+            if {[string is integer -strict $l] && ($l >  0) && ($l <= 256)} {
+                set logLength $l
+            }
+            if {[string is integer -strict $o] && ($o >= 0) && ($o <= 256)} {
+                set logStart $o
+            }
+            set logStart [expr {$logStart + $logLength >= 257 ? (257 - $logLength) : $logStart}]
+            set end [expr {$logStart + $logLength - 1}]
+            debug "evlog: L; $l; O: $o; S: $logStart; E: $end; logFetch: $logFetch; logLast: $logLast;" red
+
+            set text ""
+            if {$logFetch == 0} {
+                if {![hvLastUpdate eventlog] || ![info exists logState([expr {($logStart + $logLast) & 0xff}])]} {
+                    append text {Event log being read  (0%)} "\n" {Please Wait}
+                    upd_EventLogBg
+                } else {
+                    for {set i $logStart} {$i <= $end} {incr i} {
+                        append text [format "Line %3d: %s\n" $i $logState([expr {($i + $logLast) & 0xff}])]
+                    }
+                }
+            } else {
+                if {$logMode eq "length"} {
+                    set loglen $logLength
+                } else {
+                    set loglen 256
+                }
+                append text {Event log being read} [format { (%d%%)} [expr {(100*($loglen-$logFetch))/$loglen}]] "\n" {Please Wait}
+            }
+            return $text
+        }
+        start {
+            return $logStart
+        }
+        length {
+            return $logLength
+        }
+        mode {
+            return $logMode
+        }
+    }
+}
+
+#! evlog processor for netioaction
+#
+# netioaction evlog update
+#   Refreshes the log info (retrieves the latest from the controller).
+# netioaction evlog start {1 - 256*} 
+#   Set starting line # to display.
+#   Starting line may be adjusted to (257 - length) if
+#   it is closer than "length" to the end.
+#   Default: 237.
+# netioaction evlog length {1 - 256}
+#   Set number of log lines to display.
+#   Default: 20.
+# netioaction evlog next
+#   Set starting line to current line + length.
+#   Stops at (257 - length).
+# netioaction evlog prev
+#   Set starting line to current line - length.
+#   Stops at 1.
+# netioaction evlog first
+#   Set starting line to 1.
+# netioaction evlog last
+#   Set starting line to (257 - length).
+# netioaction evlog mode {all | length}
+#   "all" means get entire log at once,  which can take
+#   a relatively long time. Once retrieved,
+#   you can move through the log without a new fetch.
+#   Use this mode if you tend to want to scroll through a
+#   large portion of the log at one time.
+#   "length" means get only "length" entries. Each time
+#   you move through the log, a new fetch is done, but only for "length"
+#   entries, so it is much faster than the "all" mode.
+#   Use this mode if you tend to look at the last few entries
+#   for the latest posts to the log.
+#   Default: "length".
+#   Normally, mode doesn't need an active widget to change it. If you
+#   want "all", then put "netio evlog mode all" in the page's "sendOnAppear"
+#   attribute.
+hvPublic netioaction
+proc netioaction {args} {
+    global logStart logLength logMode
+
+    lassign $args type action value
+    if {$type ne "evlog"} {return}
+    debug "netioaction: $type;$action;$value;"
+    debug "mode:$logMode"
+    switch $action {
+        update {
+            upd_EventLogBg
+        }
+        start {
+            if {[string is int -strict $value] && $value >= 0 && $value <= 256} {
+                set logStart [expr {$value + $logLength >= 257 ? (257 - $logLength) : $value}]
+            }
+            debug "evlog: set start to $logStart (length: $logLength)" blue
+            if {$logMode eq "length"} {upd_EventLogBg}
+        }
+        length {
+            if {[string is int -strict $value] && $value >  0 && $value <= 256} {
+                set logLength $value
+                set logStart [expr {$logStart + $logLength >= 257 ? (257 - $logLength) : $logStart}]
+           }
+            debug "evlog: set length to $logLength (start: $logStart)" blue
+            if {$logMode eq "length"} {upd_EventLogBg}
+        }
+        next {
+            set logStart [expr {$logStart + $logLength}]
+            set logStart [expr {$logStart >= 257 ? (257 - $logLength) : $logStart}]       
+        }
+        prev {
+            set logStart [expr {$logStart - $logLength}]
+            set logStart [expr {$logStart < 1 ? 1 : $logStart}]       
+        }
+        first {
+            set logStart 1
+        }
+        last {
+            set logStart [expr {257 - $logLength}]       
+        }       
+        mode {           
+            if {$value in {all length}} {
+                if {$value ne $logMode} {
+                    set logMode $value
+                    upd_EventLogBg          
+                }
+            }
+        }
+    }
+}
+
+#! Start Event Log in the background
+proc upd_EventLogBg {} {
+    global logState logFetch logLength logStart logMode logLast afterTimers
+
+    after cancel [dict get $afterTimers log  after]
+    scan [hvSendCommand ,\\EF6501] %x last
+    set logLast $last
+    debug "upd_EventLogBg: last: [format {%x} $last]" darkgreen
+    array unset logState
+    if {$logMode eq "length"} {
+        set loglen $logLength
+        set st $logStart
+        set end [expr {$loglen + $logStart - 1}]
+    } else {
+        set loglen 256
+        set st 1
+        set end 256
+    }
+    set logFetch $loglen
+    set len [expr {$loglen % 3 == 0 ? 25 : 24}]
+    debug "Last: $last; start: $st; end: $end;" blue
+    dict set afterTimers log  after [after [dict get $afterTimers log  time] [list eventlogbg $st $end $last $len]]
+}
+
+#! Run Event Log in the background
+proc eventlogbg {num end last {len 24} {rest ""}} {
+    global logFetch logLast afterTimers
+
+    if {[catch {readlogline $num $last $len $rest} rest]} {
+        debug "Read Log Line Failed: $rest"
+        set rest ""
+    }
+    set logFetch [expr {($end - $num) & 0xff}]
+    if {[incr num] > $end} {
+        set logFetch 0
+        hvLastUpdate eventlog 1
+        set logLast $last
+        debug "eventlogbg: LogLast set to: $logLast" red
+    } else {
+        set len [expr {$len > 24 ? 23 : $len + 1}]
+        dict set afterTimers log after [after [dict get $afterTimers log time] [list eventlogbg $num $end $last $len $rest]]
+    }
+}
+
+#! Read a log line
+proc readlogline {num last {len 24} {rest ""}} {
+    global logMap logState logLast
+
+    set addr [expr {0xD700 + 24 * (($num + $last) & 0xff) + [llength $rest]}]
+    set line [hvSendCommand [format {,\%04X%02X} $addr $len] 8000 4]
+    if {[llength $line] != $len} {
+        # Lost synchronization
+        hvSendCommand ,G00 4000
+        set line [hvSendCommand [format {,\%04X%02X} $addr $len] 8000 4]
+    }
+    set line [list {*}$rest {*}$line]
+    set rest [lrange $line 24 end]
+    set logState([expr {($num + $last) & 0xff}]) [binary format H48 [join [string map $logMap $line] ""]]
+    debug "Line $num ([expr {($num + $last) & 0xff}]): $logState([expr {($num + $last) & 0xff}])" darkblue
+    return $rest
+}
+
+#! Check for updates to log. If any, get the new entries.
+proc checklast {} {
+    global logFetch logLast logMode afterTimers
+    
+    if {$logFetch == 0} {
+        catch {scan [hvSendCommand ,\\EF6501] %x last}       
+        if {[info exists last] && $last != $logLast} {
+            if {$logMode eq "length"} {
+                upd_EventLogBg
+            } else {
+                set loglen [expr {($last - $logLast) & 0xff}]
+                set st [expr {(257 - $loglen) & 0xff}]
+                set end 256           
+                set len [expr {$loglen % 3 == 0 ? 25 : 24}]
+                after cancel [dict get $afterTimers log after]
+                dict set afterTimers log after [after [dict get $afterTimers log time] [list eventlogbg $st $end $last $len]] 
+                }
+        } else {
+            debug "checklast: last: no read, logLast: $logLast" red
+            if {[info exists last]} {
+                debug "checklast: last: $last, logLast: $logLast" red
+            }
+        }
+    }
+}

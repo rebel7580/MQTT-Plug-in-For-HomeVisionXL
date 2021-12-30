@@ -58,5 +58,5 @@ The Change Log can be found in the Wiki section [Here](https://github.com/rebel7
 
 # Help
 
-Help is available through the plug-in. Also, a version of the help file can be found in this Project's [Documentation pages](https://rebel7580.github.io/index).
+Help is available through the plug-in. Also, a version of the help file can be found in this Project's [Documentation pages](https://rebel7580.github.io/MQTT).
 The help file is very detailed. Please read it throughly to properly set up your devices.

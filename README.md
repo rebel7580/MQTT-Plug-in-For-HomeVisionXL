@@ -38,6 +38,7 @@ The HomeVisionXL MQTT Plug-in package consists of the following files:
 * mqtt-2.0.tm - MQTT library (courtesy of Schelte Bron!),
 * uuid-1.0.5.tm - support library.
 * md5-2.0.4.tm - support library (required by uuid-1.0.5.tm).
+* mqtt_evlog.hap, netio_evlog.hap - helper plug-ins for HomeVision Log.
 
 Click the "Code" button then select "Download ZIP".
 Extract the above five files into your plugin folder.

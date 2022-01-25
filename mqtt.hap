@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.107 $
-# $Date: 2021/12/22 23:00:37 $
+# $Revision: 1.108 $
+# $Date: 2022/01/24 22:55:00 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.107 2021/12/22 23:00:37 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.108 2022/01/24 22:55:00 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -523,7 +523,7 @@ proc subrecv {topic msg {retain 0}} {
                             if {$object eq "timer"} {
                                 set cmd [status_Timer $id]
                             } else {
-                            set cmd [dict get $objstat cmd]
+                                set cmd [dict get $objstat cmd]
                             }
                             if {$cfg(pwrStatResponse)} {
                                 sendMqtt pub stat $dtopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
@@ -735,17 +735,17 @@ proc subrecv {topic msg {retain 0}} {
                                     set val [expr {min(100, $val)}]
                                     switch $model {
                                         x10 {
-                                            set arg [expr {round(16 * $val / 100)}]
+                                            set arg [expr {round(16 * $val / 100.0)}]
                                             set level "level"
                                             set val [levelpercent $model $arg]
                                         }
                                         pcs {
-                                            set arg [expr {round(floor(31 * $val / 100))}]
+                                            set arg [expr {round(floor(31 * $val / 100.0))}]
                                             set val [levelpercent $model $arg]
                                             set level "pcslevel"
                                         }
                                         ext {
-                                            set arg [expr {round(63 * $val / 100)}]
+                                            set arg [expr {round(63 * $val / 100.0)}]
                                             set level "directtolevel"
                                             set val [levelpercent $model $arg]
                                         }
@@ -756,7 +756,7 @@ proc subrecv {topic msg {retain 0}} {
                                             set dim 0
                                         }
                                         light {
-                                            set arg [expr {round([hvLightConfigure maxlevel] * $val / 100)}]
+                                            set arg [expr {round([hvLightConfigure maxlevel] * $val / 100.0)}]
                                             lappend arg 0
                                             set level "level"
                                         }
@@ -915,6 +915,14 @@ proc hvrecv {fulltopic msg {retain 0}} {
     set resp [dict get $rst post type]
 
     debug "HV Recv'd: $topic, $resp, $msg" red
+    if {$topic eq "homevision/action"} {
+        if {[catch {hvTrigger $msg} rst]} {
+            mqttComm pub $cfg(statPrefix)/$topic $rst
+        } else {
+            mqttComm pub $cfg(statPrefix)/$topic $msg
+        }
+        return
+    }
     if {([string tolower $resp] ne "power") || $msg ni {"" ?}} {
         return
     }
@@ -930,7 +938,7 @@ proc hvrecv {fulltopic msg {retain 0}} {
     # don't report on ir, se, pe, macro
     foreach ob {ir se pe macro} {
         set pos [lsearch -exact $objs $ob]
-    set objs [lreplace $objs $pos $pos]
+        set objs [lreplace $objs $pos $pos]
     }
     set match [join $objs |]
     if {$match eq ""} {
@@ -942,7 +950,7 @@ proc hvrecv {fulltopic msg {retain 0}} {
         if {$object eq "timer"} {
             set cmd [status_Timer $id]
         } else {
-        set cmd [dict get $objstat cmd]
+            set cmd [dict get $objstat cmd]
         }
         if {$cfg(pwrStatResponse)} {
             sendMqtt pub stat $otopic pwr $cmd [expr {($loglevel & 0x02)>>1}] $retain
@@ -1364,6 +1372,8 @@ proc createObjects {} {
     }
     if {$type eq "flag_b"} {
         set match "flag"
+    } elseif {$type eq "var_n"} {
+        set match "var"
     } else {
         set match $type
     }
@@ -1404,6 +1414,8 @@ proc createList {} {
             lappend values $obs
             if {$obs eq "flag"} {
                 lappend values "flag_b"
+            } elseif {$obs eq "var"} {
+                lappend values "var_n"
             }
         }
     }
@@ -1510,7 +1522,8 @@ proc haObjectDiscovery {args} {
         }
         break
     }
-    set flag_b 0
+    set altmatch ""
+    set altobj 0
     set args [lassign $args add]
     set obs [createList]
     if {$args eq ""} {
@@ -1519,8 +1532,13 @@ proc haObjectDiscovery {args} {
         set ids [lassign $args otype]
         set match [string tolower $otype]
         if {$match eq "flag_b"} {
+            set altmatch $match
             set match "flag"
-            set flag_b 1
+            set altobj 1
+        } elseif {$match eq "var_n"} {
+            set altmatch $match
+            set match "var"
+            set altobj 1
         } elseif {$match ni $obs} {
             return
         }
@@ -1529,7 +1547,7 @@ proc haObjectDiscovery {args} {
     foreach row [mk::select cfg.x10 -regexp object $match -sort object] {
         lassign [mk::get cfg.x10!$row id name topic type object model] id name topic type object model
         if {$ids eq "" || $id in $ids} {
-            sendDiscovery $noid $nous $retain $nodevice $add $id $name $topic [expr {$flag_b == 1 ? "flag_b" : $object}] $model HomeVision
+            sendDiscovery $noid $nous $retain $nodevice $add $id $name $topic [expr {$altobj == 1 ? $altmatch : $object}] $model HomeVision
             if {$object eq "timer"} {
             sendDiscovery $noid $nous $retain $nodevice $add $id $name $topic "timer_t" $model HomeVision
             }
@@ -1553,6 +1571,9 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
 
     if {$object eq "flag_b"} {
         append fid "b"
+    }
+    if {$object eq "var_n"} {
+        append fid "n"
     }
     if {$object eq "timer_t"} {
         append name "_time"
@@ -1676,6 +1697,19 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov val_tpl "{{ value_json.STATE }}"
             dict unset discov ret
             if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
+                if {$dc ne ""} {
+                    dict set discov dev_cla $dc
+                }
+            }
+        }
+        var_n {
+            set device "number"
+            dict set discov stat_t "$stat"
+            dict set discov val_tpl "{{ value_json.STATE }}"
+            dict set discov cmd_t "$cmnd"
+            dict set discov max 255
+            dict set discov min 0
+            if {[regexp {dc:(\w+)} [hvObjectDesc var $id] --> dc]} {
                 if {$dc ne ""} {
                     dict set discov dev_cla $dc
                 }

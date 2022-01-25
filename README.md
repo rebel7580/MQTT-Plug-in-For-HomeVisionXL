@@ -44,9 +44,12 @@ Click the "Code" button then select "Download ZIP".
 Extract the above files into your plugin folder.
 
 mqtt_evlog.hap, netio_evlog.hap are only needed if you want MQTT access to the HomeVision Event Log.
-**Note: netio_evlog.hap is a slight upgrade to the one supplied with version 3.2 of the NetIO plug-in but is compatible with it.**
-* If you are accessing the HomeVision Event Log via NetIO but not via MQTT, DO NOT delete netio_evlog.hap! (mqtt_evlog.hap CAN be deleted.)
-* If you are accessing the HomeVision Event Log via MQTT, subsequent downloads of the 3.2 version of the NetIO plug-in will revert netio_evlog.hap back on a version not compatible with MQTT. Either save and restore the MQTT version of netio_evlog.hap., or re-download MQTT completely.
+
+**Caution!! netio_evlog.hap supplied here is a slight upgrade to the one supplied with version 3.2 of the NetIO plug-in.
+This version is compatible with version 3.2 of the NetIO plug-in and will overwrite any existing NetIO verson of this file.
+Please be aware:**
+* If you are accessing the HomeVision Event Log via NetIO but not via MQTT, DO NOT delete netio_evlog.hap! You'll need it for NetIO. mqtt_evlog.hap CAN be deleted.
+* If you are accessing the HomeVision Event Log via MQTT, <i>subsequently</i> downloading the 3.2 version of the NetIO plug-in will revert netio_evlog.hap back to the original NetIO 3.2 version which is not compatible with MQTT. Either save and restore the MQTT version of netio_evlog.hap., or re-download MQTT completely.
 
 You can delete README.md and LICENSE.
 

@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
-# Version 1.0 
-# $Revision: 1.108 $
-# $Date: 2022/01/24 22:55:00 $
+# Version 1.0
+# $Revision: 1.109 $
+# $Date: 2022/01/26 02:11:03 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.108 2022/01/24 22:55:00 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.109 2022/01/26 02:11:03 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -916,7 +916,7 @@ proc hvrecv {fulltopic msg {retain 0}} {
 
     debug "HV Recv'd: $topic, $resp, $msg" red
     if {$topic eq "homevision/action"} {
-        if {[catch {hvTrigger $msg} rst]} {
+        if {[catch {hvExecTrigger $msg} rst]} {
             mqttComm pub $cfg(statPrefix)/$topic $rst
         } else {
             mqttComm pub $cfg(statPrefix)/$topic $msg
@@ -1708,7 +1708,17 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov val_tpl "{{ value_json.STATE }}"
             dict set discov cmd_t "$cmnd"
             dict set discov max 255
+            if {[regexp {max:(\d+)} [hvObjectDesc var $id] --> max]} {
+                if {$max ne ""} {
+                    dict set discov max $max
+                }
+            }
             dict set discov min 0
+            if {[regexp {min:(\d+)} [hvObjectDesc var $id] --> min]} {
+                if {$min ne ""} {
+                    dict set discov min $min
+                }
+            }
             if {[regexp {dc:(\w+)} [hvObjectDesc var $id] --> dc]} {
                 if {$dc ne ""} {
                     dict set discov dev_cla $dc
@@ -1820,6 +1830,8 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             bri_scale -
             max_temp -
             min_temp -
+            max -
+            min -
             qos {
                 set fmt {"%s":%d}
             }

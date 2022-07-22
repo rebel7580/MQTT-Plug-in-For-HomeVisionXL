@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.109 $
-# $Date: 2022/01/26 02:11:03 $
+# $Revision: 1.111 $
+# $Date: 2022/07/18 04:05:05 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.109 2022/01/26 02:11:03 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.111 2022/07/18 04:05:05 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -1399,6 +1399,11 @@ proc createObjects {} {
                 lappend values "[string toupper [string range $object 0 1]]-$id"
             }
             lappend values $name
+#            debug "values:$values" green
+            lappend allvalues $values
+        }
+        set allvalues [lsort -integer -index 0 $allvalues]
+        foreach values $allvalues {
             $win insert {} end -values $values
         }
     }
@@ -1793,12 +1798,11 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             }
         }
         hvac {
+            set preset 1
             set device "climate"
             dict set discov modes {["auto", "off", "cool", "heat"]}
             dict set discov fan_modes {["fanauto","fanon"]}
-            dict set discov hold_modes {["run","hold"]}
             dict set discov mode_cmd_t "$cmnd"
-            dict set discov hold_cmd_t "$cmnd"
             dict set discov temp_cmd_t "$cmnd"
             dict set discov fan_mode_cmd_t "$cmnd"
             dict set discov "~" "$stat"
@@ -1806,8 +1810,17 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov curr_temp_tpl "{{ value_json.Temperature }}"   
             dict set discov mode_stat_t "~"
             dict set discov mode_stat_tpl "{{ value_json.HVAC|lower }}"   
-            dict set discov hold_stat_t "~"
-            dict set discov hold_stat_tpl "{{ value_json.Control|lower }}"   
+            if {$preset == 1} {
+                dict set discov pr_modes {["run","hold"]}
+                dict set discov pr_mode_cmd_t "$cmnd"
+                dict set discov pr_mode_stat_t "~"
+                dict set discov pr_mode_val_tpl "{{ value_json.Control|lower }}"   
+            } else {
+                dict set discov hold_modes {["run","hold"]}
+                dict set discov hold_cmd_t "$cmnd"
+                dict set discov hold_stat_t "~"
+                dict set discov hold_stat_tpl "{{ value_json.Control|lower }}"   
+            }
             dict set discov temp_stat_t "~"
             dict set discov temp_stat_tpl "{{ value_json.Setpoint }}"   
             dict set discov fan_mode_stat_t "~"
@@ -1840,6 +1853,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             precision -
             modes -
             fan_modes -
+            pr_modes -
             hold_modes {
                 set fmt {"%s":%s}
             }
@@ -1966,7 +1980,7 @@ hvPublic mqttComm
 proc mqttComm {args} {
     global cfg mymqtt
 
-    debug "mqttComm: $args" red
+#    debug "mqttComm: $args" red
     if {![info exists mymqtt] || $mymqtt eq ""} {return ""}
     set log 0
     set retain 0
@@ -2654,7 +2668,7 @@ proc cfg_mqtt {} {
     .mqtt.f.f4.ni.f.tv heading name -text "Object Name"
     ttk::scrollbar .mqtt.f.f4.ni.f.vs -command {.mqtt.f.f4.ni.f.tv yview}
     grid .mqtt.f.f4.ni.f.tv .mqtt.f.f4.ni.f.vs -sticky news
-    grid columnconfigure .mqtt.f.f4.ni.f .mqtt.f.f4.ni.f.tv -weight 1
+#    grid columnconfigure .mqtt.f.f4.ni.f .mqtt.f.f4.ni.f.tv -weight 3
     grid rowconfigure .mqtt.f.f4.ni.f .mqtt.f.f4.ni.f.tv -weight 1
 
     ttk::label .mqtt.f.f4.l3 -text "Discovery Type:"
@@ -3906,12 +3920,8 @@ proc cfg_sortlistx {type} {
             .mqtt.f.f1.ni.b3 state disabled
         }
         if {$cfg(sortX10) != 0} {
-            #sort via id field
-            if {$cfg(sortX10) == 1} {
-                set rows [mk::select cfg.$device -sort {type id}]
-            } elseif {$cfg(sortX10) == -1} {
-                set rows [mk::select cfg.$device -rsort {type id}]
-            }
+            # sort via id field - real sort done below
+            set rows [mk::select cfg.$device -sort {type id}]
         } else {
             if {$cfg(sortName) == 0 && $cfg(sortTopic) == 0} {
                 set rows [mk::select cfg.$device -globnc topic "*"]
@@ -3926,9 +3936,9 @@ proc cfg_sortlistx {type} {
             }
         }
         $win delete [$win children {}]
-        foreach row $rows {
-            set tag "black"
-            if {$type in "ext"} {
+        if {$type in "ext"} {
+            foreach row $rows {
+                set tag "black"
                 if {[mk::get cfg.$device!$row status] == 1} {
                     set tag "red"
                 }
@@ -3948,9 +3958,19 @@ proc cfg_sortlistx {type} {
                     set macro [lreplace $macro $i $i "-"]
                 }
                 lappend values [join $macro "/"]
-            } elseif {$type in "obj"} {
-                set values [mk::get cfg.$device!$row name topic]
+                $win insert {} end -values $values -tags $tag
+            }
+        } elseif {$type in "obj"} {
+            foreach row $rows {
+                set tag "black"
+                if {[mk::get cfg.$device!$row status] == 1} {
+                    set tag "red"
+                }
                 lassign [mk::get cfg.$device!$row id object state] id object state
+                set values $id
+                lappend values $tag
+                lappend values {*}[mk::get cfg.$device!$row name topic]
+
                 if {$object eq "hvac"} {
                     lappend values [lindex {Off Heat Cool Auto} [expr {($state & 0x06)>>1}]]
                 } else {
@@ -3963,9 +3983,37 @@ proc cfg_sortlistx {type} {
                 } else {
                     lappend values "[string toupper [string range $object 0 1]]-$id"
                 }
-                lappend values {*}[mk::get cfg.$device!$row type level]
+                lappend values [string map {a 10 b 11 c 12 d 13 e 14 f 15} [mk::get cfg.$device!$row type]]
+                lappend values [mk::get cfg.$device!$row level]
+                lappend allvalues $values
             }
-            $win insert {} end -values $values -tags $tag
+            foreach l $allvalues {
+                lappend types [lindex $l 6]
+            }
+            if {$cfg(sortX10) == 1} {
+                set types [lsort -integer -unique $types]
+            } elseif {$cfg(sortX10) == -1} {
+                set types [lsort -integer -unique -decreasing $types]
+            } else {
+                foreach tp $types {dict set tmp $tp 1}
+                set types [dict keys $tmp]
+            }
+            foreach type $types {
+                set tempvalues {}
+                foreach l $allvalues {
+                    if {[lindex $l 6] == $type} {
+                        lappend tempvalues $l
+                    }
+                }
+                if {$cfg(sortX10) == 1} {
+                    set tempvalues [lsort -integer -index 0 $tempvalues]
+                } elseif {$cfg(sortX10) == -1} {
+                    set tempvalues [lsort -integer -index 0 -decreasing $tempvalues]
+                }
+                foreach values $tempvalues {
+                    $win insert {} end -values [lrange $values 2 end] -tags [lindex $values 1]
+                }
+            }
         }
     }
 }

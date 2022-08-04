@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.111 $
-# $Date: 2022/07/18 04:05:05 $
+# $Revision: 1.112 $
+# $Date: 2022/08/04 15:46:02 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.111 2022/07/18 04:05:05 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.112 2022/08/04 15:46:02 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -1380,7 +1380,7 @@ proc createObjects {} {
 
     $win delete [$win children {}]
     $win insert {} end -values [list 999 "-" "All"]
-    
+
     if {$type in [dict keys $discovDevices]} {
         dict for {id info} [dict get $discovDevices $type] {
             set values [list $id [lindex $info 0] [lindex $info 1]]
@@ -1388,6 +1388,9 @@ proc createObjects {} {
         }
     } else {
         set rows [mk::select cfg.x10 -regexp object $match -sort id]
+        if {![llength $rows]} {
+            return
+        }
         foreach row $rows {
             lassign [mk::get cfg.x10!$row id object state name] id object state name
             set values [format {%3d} $id]
@@ -3936,6 +3939,9 @@ proc cfg_sortlistx {type} {
             }
         }
         $win delete [$win children {}]
+        if {![llength $rows]} {
+            return
+        }
         if {$type in "ext"} {
             foreach row $rows {
                 set tag "black"

@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.112 $
-# $Date: 2022/08/04 15:46:02 $
+# $Revision: 1.113 $
+# $Date: 2022/11/18 03:05:27 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.112 2022/08/04 15:46:02 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.113 2022/11/18 03:05:27 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -1683,7 +1683,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov val_tpl "{{ value_json.STATE }}"
             dict set discov cmd_t "$cmnd"
             dict set discov pl_on "ON 1"
-            dict set discov pl_off "Off 1"
+            dict set discov pl_off "ON 1"
             dict set discov stat_on "ON"
             dict set discov stat_off "Unknown"
         }
@@ -1695,7 +1695,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov val_tpl "{{ value_json.STATE }}"
             dict set discov cmd_t "$cmnd"
             dict set discov pl_on "Run"
-            dict set discov pl_off "Off"
+            dict set discov pl_off "Run"
             dict set discov stat_on "ON"
             dict set discov stat_off "Unknown"
         }
@@ -2666,7 +2666,7 @@ proc cfg_mqtt {} {
       -displaycolumns {id name} -show headings -height 15 \
       -yscrollcommand {.mqtt.f.f4.ni.f.vs set}
     .mqtt.f.f4.ni.f.tv heading id -text "ID"
-    .mqtt.f.f4.ni.f.tv column id -stretch 1 -width 70 -anchor center
+    .mqtt.f.f4.ni.f.tv column id -stretch 1 -width 200 -anchor center
     .mqtt.f.f4.ni.f.tv column name -stretch 1 -width 200 -anchor center
     .mqtt.f.f4.ni.f.tv heading name -text "Object Name"
     ttk::scrollbar .mqtt.f.f4.ni.f.vs -command {.mqtt.f.f4.ni.f.tv yview}

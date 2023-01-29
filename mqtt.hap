@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.113 $
-# $Date: 2022/11/18 03:05:27 $
+# $Revision: 1.114 $
+# $Date: 2022/11/30 01:38:16 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.113 2022/11/18 03:05:27 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.114 2022/11/30 01:38:16 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -382,7 +382,7 @@ proc subrecv {topic msg {retain 0}} {
 #                   debug "$match; $resp: payload:$payload;" red
                     set row [mk::select cfg.devices -regexp topic $match]
                     if {$row ne ""} {
-                        lassign [mk::get cfg.devices!$row flag macro_on macro_off varflag loglevel cmdtrig] id macro_on macro_off varflag loglevel cmdtrig
+                        lassign [mk::get cfg.devices!$row flag macro_on macro_off varflag loglevel cmdtrig name] id macro_on macro_off varflag loglevel cmdtrig name
                         if {$loglevel & 0x01} {
                             mqttLog "rx: $topic $msg"
                         }
@@ -390,6 +390,7 @@ proc subrecv {topic msg {retain 0}} {
                             debug "No payload: $topic: $msg" red
                         } elseif {$payload eq "on"} {
                             mk::set cfg.devices!$row state "On" status 0
+                            updateGUI "ext" $name state On
                             if {[triggers $row $topic $msg "on" 100] == 2} {return}
                             if {$id ne "" && $id < 512} {
                                 if {$id < 256} {
@@ -406,6 +407,7 @@ proc subrecv {topic msg {retain 0}} {
                             }
                         } elseif {$payload eq "off"} {
                             mk::set cfg.devices!$row state "Off" status 0
+                            updateGUI "ext" $name state Off
                             if {[triggers $row $topic $msg "off" 0] == 2} {return}
                             if {$id ne "" && $id < 512} {
                                 if {$id < 256} {
@@ -444,6 +446,7 @@ proc subrecv {topic msg {retain 0}} {
                                 if {$st ne "on"} {set val $st}
                                 set val [expr {0xffff & int($val)}]
                                 mk::set cfg.devices!$row state $val status 0
+                                updateGUI "ext" $name state $val
                                 if {[triggers $row $topic $msg "on" $val] == 2} {return}
                                 if {$id ne "" && $id < 512} {
                                     if {$id < 256} {
@@ -483,23 +486,23 @@ proc subrecv {topic msg {retain 0}} {
                                 mk::set cfg.devices!$row status 0
                             }
                         }
-                        cfg_sortlist ext
                     }
                 } $cfg(LWTPostfix) {
                     debug "LWT-$device:$msg" red
                     set row [mk::select cfg.devices -regexp topic $match]
                     if {$row ne ""} {
-                        lassign [mk::get cfg.devices!$row loglevel] loglevel
+                        lassign [mk::get cfg.devices!$row name loglevel] name loglevel
                         if {$loglevel & 0x01} {
                             mqttLog "rx: $topic $msg"
                         }
                         set payload [string tolower $msg]
                         if {$payload eq "online"} {
                             mk::set cfg.devices!$row status 0
+                            updateGUI "ext" $name status 0
                         } elseif {$payload eq "offline"} {
                             mk::set cfg.devices!$row status 1
+                            updateGUI "ext" $name status 1
                         }
-                        cfg_sortlist ext
                    }
                 } default {
                     debug "Unknown response: $type, $resp" red
@@ -844,7 +847,6 @@ proc subrecv {topic msg {retain 0}} {
                             }
                         }
                     }
-                    cfg_sortlist obj
                 } default {
                     debug "Unknown command: $type, $resp" red
                 }
@@ -937,8 +939,8 @@ proc hvrecv {fulltopic msg {retain 0}} {
     }
     # don't report on ir, se, pe, macro
     foreach ob {ir se pe macro} {
-        set pos [lsearch -exact $objs $ob]
-        set objs [lreplace $objs $pos $pos]
+#        set pos [lsearch -exact $objs $ob]
+#        set objs [lreplace $objs $pos $pos]
     }
     set match [join $objs |]
     if {$match eq ""} {
@@ -1203,6 +1205,8 @@ proc objupdate {type {publish 1}} {
         set objstat [getStatus $row]
         dict with objstat {
            if {$newstate ne $state || $newlevel ne $level || $newsetp ne $model} {
+                updateGUI "obj" $name state $newstate 
+                updateGUI "obj" $name level $newlevel
                 mk::set cfg.x10!$row state $newstate level $newlevel model $newsetp
                  debug "$object:$id-$topic!:$state->$newstate,$level->$newlevel,$model->$newsetp;cmd:$cmd"
                 if {$publish} {
@@ -1227,7 +1231,29 @@ proc objupdate {type {publish 1}} {
             }
         }
     }
-    cfg_sortlist obj
+}
+
+proc updateGUI {type name column value} {
+
+    if {[winfo exist .mqtt.usr]} {return}
+    if {[winfo exist .mqtt]} {
+        if {$type eq "obj"} {
+            set win .mqtt.f.f3.ni.f.tv
+        } else {
+            set win .mqtt.f.f1.ni.f.tv
+        }
+        if {$column in {state level}} {
+            $win set $name $column $value
+        } elseif {$column eq "status"} {
+            if {$value == 0} {
+                $win tag add "black" $name
+                $win tag remove "red" $name
+            } else {
+                $win tag add "red" $name
+                $win tag remove "black" $name
+            }
+        }
+    }
 }
 
 proc subscribe {{type sub}} {
@@ -1684,7 +1710,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov cmd_t "$cmnd"
             dict set discov pl_on "ON 1"
             dict set discov pl_off "ON 1"
-            dict set discov stat_on "ON"
+            dict set discov stat_on "ON 1"
             dict set discov stat_off "Unknown"
         }
         macro -
@@ -3435,6 +3461,8 @@ proc cfg_cmdtrig {} {
         .mqtt.usr.f1.xb1 state !disabled
         .mqtt.usr.f1.xb2 state !disabled
         .mqtt.usr.f1.xl2 state !disabled
+        .mqtt.usr.f2.xb3 state !disabled
+        .mqtt.usr.f2.xb4 state !disabled
         .mqtt.usr.fr2.r3 state disabled
         .mqtt.usr.fr2.r4 state disabled
         .mqtt.usr.fr2.r5 state disabled
@@ -3453,6 +3481,8 @@ proc cfg_cmdtrig {} {
         .mqtt.usr.f1.xb1 state disabled
         .mqtt.usr.f1.xb2 state disabled
         .mqtt.usr.f1.xl2 state disabled
+        .mqtt.usr.f2.xb3 state disabled
+        .mqtt.usr.f2.xb4 state disabled
         .mqtt.usr.l7 configure -text "Command:"
         set mqttallonoff 0
         .mqtt.usr.fr2.r3 state disabled
@@ -3472,6 +3502,8 @@ proc cfg_cmdtrig {} {
         .mqtt.usr.f1.xb1 state disabled
         .mqtt.usr.f1.xb2 state disabled
         .mqtt.usr.f1.xl2 state disabled
+        .mqtt.usr.f2.xb3 state !disabled
+        .mqtt.usr.f2.xb4 state !disabled
         grid remove .mqtt.usr.l7 .mqtt.usr.e7
         grid .mqtt.usr.l7a .mqtt.usr.e7a -padx 4 -pady 1 -sticky we
         if {$mqttallonoff == 1 && $mqtttrigstdcus == 0} {
@@ -3949,6 +3981,7 @@ proc cfg_sortlistx {type} {
                     set tag "red"
                 }
                 set values [mk::get cfg.$device!$row name topic state]
+                set name [mk::get cfg.$device!$row name]
                 set flag [mk::get cfg.$device!$row flag]
                 set macro [mk::get cfg.$device!$row macro_on macro_off]
                 if {$flag == 512} {
@@ -3964,7 +3997,7 @@ proc cfg_sortlistx {type} {
                     set macro [lreplace $macro $i $i "-"]
                 }
                 lappend values [join $macro "/"]
-                $win insert {} end -values $values -tags $tag
+                $win insert {} end -id $name -values $values -tags $tag
             }
         } elseif {$type in "obj"} {
             foreach row $rows {
@@ -4017,7 +4050,7 @@ proc cfg_sortlistx {type} {
                     set tempvalues [lsort -integer -index 0 -decreasing $tempvalues]
                 }
                 foreach values $tempvalues {
-                    $win insert {} end -values [lrange $values 2 end] -tags [lindex $values 1]
+                    $win insert {} end -id [lindex $values 2] -values [lrange $values 2 end] -tags [lindex $values 1]
                 }
             }
         }

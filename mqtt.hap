@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.114 $
-# $Date: 2022/11/30 01:38:16 $
+# $Revision: 1.117 $
+# $Date: 2023/04/06 22:09:48 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.114 2022/11/30 01:38:16 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.117 2023/04/06 22:09:48 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -61,8 +61,19 @@ array set cfg {
     pwrStatResponse   1
     rstStatResponse   0
     rstDimming        0
+    PubTopic1         ""
+    PubTopic2         ""
+    PubMsg1           ""
+    PubMsg2           ""
+    SubTopic1         ""
+    SubTopic2         ""
 }
 set cfg(txtext) [expr {$tcl_platform(platform) eq "windows" ? ".txt" : ""}]
+
+array set lastSub {
+    SubTopic1         ""
+    SubTopic2         ""
+}
 
 set x10types {
     none  ""
@@ -145,13 +156,13 @@ proc connect {} {
 }
 
 hvImport mqttReady
-proc mqttStatusrecv {topic payload retain} {
+proc mqttStatusrecv {topic payload args} {
 
     mqttLog "mqttStatus:$payload;" red     
     mqttReady $payload
 }
 
-proc mqttPublishrecv {topic payload retain} {
+proc mqttPublishrecv {topic payload args} {
 
     debug "mqttPublish:[dict get $payload topic],[dict get $payload data];" red     
 }
@@ -361,7 +372,7 @@ proc buildft {ftd} {
 }
 
 # Read MQTT response
-proc subrecv {topic msg {retain 0}} {
+proc subrecv {topic msg args} {
     global cfg objtypes
 
     set rst [topicTemplate $topic]
@@ -908,7 +919,7 @@ proc levelpercent {model arg} {
 }
 
 # MQTT response for homevision topic
-proc hvrecv {fulltopic msg {retain 0}} {
+proc hvrecv {fulltopic msg args} {
     global cfg objtypes
 
     set rst [topicTemplate $fulltopic]
@@ -979,7 +990,7 @@ proc hvrecv {fulltopic msg {retain 0}} {
 }
 
 # MQTT response for custom triggered topics (standard triggered topics use subrecv)
-proc trigrecv {topic msg {retain 0}} {
+proc trigrecv {topic msg args} {
 
     debug "Trig Recv'd: $topic, $msg" red
     set row [mk::select cfg.devices -regexp topic $topic]
@@ -1589,7 +1600,7 @@ proc haObjectDiscovery {args} {
     }
 }
 
-#hvPublic sendDiscovery
+hvPublic sendDiscovery
 proc sendDiscovery {noid nous retain nodevice add id name topic object type  model {man "CustomSolutions"}} {
     global cfg
 
@@ -2680,6 +2691,49 @@ proc cfg_mqtt {} {
     cfg_logsel
 
     .mqtt.f add .mqtt.f.f2 -text "Settings" -underline 0
+
+    # PubSub Tab
+    ttk::frame .mqtt.f.f5
+    ttk::labelframe .mqtt.f.f5.p -text "Publish:"
+    ttk::label .mqtt.f.f5.p.lt1 -text "Topic:"  -anchor e
+    ttk::entry .mqtt.f.f5.p.et1 -width 30 -justify center -textvariable cfg(PubTopic1)
+    ttk::label .mqtt.f.f5.p.lm1 -text "Payload:" -anchor e
+    ttk::entry .mqtt.f.f5.p.em1 -width 30 -justify center -textvariable cfg(PubMsg1)
+    ttk::button .mqtt.f.f5.p.bp1 -text "Publish"  -command [list runPublish 1]
+
+    ttk::label .mqtt.f.f5.p.lt2 -text "Topic:"  -anchor e
+    ttk::entry .mqtt.f.f5.p.et2 -width 30 -justify center -textvariable cfg(PubTopic2)
+    ttk::label .mqtt.f.f5.p.lm2 -text "Payload:" -anchor e
+    ttk::entry .mqtt.f.f5.p.em2 -width 30 -justify center -textvariable cfg(PubMsg2)
+    ttk::button .mqtt.f.f5.p.bp2 -text "Publish"  -command [list runPublish 2]
+
+    ttk::labelframe .mqtt.f.f5.s -text "Subscribe:"
+    ttk::label .mqtt.f.f5.s.lt1 -text "Topic:"  -anchor e
+    ttk::entry .mqtt.f.f5.s.et1 -width 30 -justify center -textvariable cfg(SubTopic1)
+    ttk::button .mqtt.f.f5.s.bs1 -text "Subscribe" -command [list runSubscribe 1]
+    ttk::button .mqtt.f.f5.s.bu1 -text "Unsubscribe" -command [list runSubscribe -1]
+
+    ttk::label .mqtt.f.f5.s.lt2 -text "Topic:"  -anchor e
+    ttk::entry .mqtt.f.f5.s.et2 -width 30 -justify center -textvariable cfg(SubTopic2)
+    ttk::button .mqtt.f.f5.s.bs2 -text "Subscribe" -command [list runSubscribe 2]
+    ttk::button .mqtt.f.f5.s.bu2 -text "Unsubscribe" -command [list runSubscribe -2]
+
+    grid .mqtt.f.f5.p.lt1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.lm1 .mqtt.f.f5.p.em1 .mqtt.f.f5.p.bp1 -sticky nws -padx 3
+    grid .mqtt.f.f5.p.lt2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.lm2 .mqtt.f.f5.p.em2 .mqtt.f.f5.p.bp2 -sticky nws -padx 3
+    grid configure .mqtt.f.f5.p     -sticky nes -padx 3
+    
+    grid .mqtt.f.f5.s.lt1 .mqtt.f.f5.s.et1 .mqtt.f.f5.s.bs1 .mqtt.f.f5.s.bu1 -sticky nws -padx 3
+    grid .mqtt.f.f5.s.lt2 .mqtt.f.f5.s.et2 .mqtt.f.f5.s.bs2 .mqtt.f.f5.s.bu2 -sticky nws -padx 3
+    grid configure .mqtt.f.f5.s     -sticky nes -padx 3
+
+#    grid .mqtt.f.f5.p -column 0 -columnspan 2 -sticky news -padx 3
+    grid .mqtt.f.f5.p -columnspan 3 -ipady 5 -sticky news -padx 3 -pady 10
+    grid .mqtt.f.f5.s -columnspan 3 -ipady 5 -sticky news -padx 3 -pady 10
+#    grid rowconfigure .mqtt.f.f5 .mqtt.f.f5.p .mqtt.f.f5.s -weight 1
+#    grid columnconfigure .mqtt.f.f5 1 -weight 1
+    grid .mqtt.f.f5 -sticky news  -padx 5 -pady 5
+
+    .mqtt.f add .mqtt.f.f5 -text "Pub/Sub" -underline 0
 
     # Discovery Tab
     ttk::frame .mqtt.f.f4
@@ -4318,12 +4372,53 @@ proc createmacrolist {widget var} {
     }
 }
 
+proc runPublish {num} {
+    global cfg
+
+    if {$num ni {1 2}} return
+
+    if {$cfg(PubTopic$num) eq ""} return
+    mqttComm pub $cfg(PubTopic$num) $cfg(PubMsg$num)
+}
+
+proc runSubscribe {num} {
+    global cfg lastSub
+
+#   debug "num:$num,1:$cfg(SubTopic1),2:$cfg(SubTopic2),lastsub: 1:$lastSub(SubTopic1),2:$lastSub(SubTopic2)" red
+
+    set anum [expr {abs($num)}]
+    if {$cfg(SubTopic$anum) eq "" || $num ni {1 2 -1 -2}} return
+
+    if {$lastSub(SubTopic$anum) ne $cfg(SubTopic$anum)} {
+        mqttComm unsub $lastSub(SubTopic$anum) runSubscribecb
+    }
+
+    if {$num in {1 2}} {
+        mqttComm sub $cfg(SubTopic$anum) runSubscribecb
+        set lastSub(SubTopic$anum) $cfg(SubTopic$anum)
+    } elseif {$num in {-1 -2}} {
+        mqttComm unsub $cfg(SubTopic$anum) runSubscribecb
+        set lastSub(SubTopic$anum) ""
+    }
+#   debug "num:$num,1:$cfg(SubTopic1),2:$cfg(SubTopic2),lastsub: 1:$lastSub(SubTopic1),2:$lastSub(SubTopic2)" red
+}
+
+hvPublic runSubscribecb
+proc runSubscribecb {topic payload args} {
+
+    debug "Topic: $topic; Message: $payload" blue
+
+}
+
 proc cfg_done {} {
     global cfg
 
     mk::loop row cfg.main {
         array set tmpcfg [mk::get $row name value]
     }
+
+    runSubscribe -1
+    runSubscribe -2
 
     if {$tmpcfg(broker) ne $cfg(broker) || $tmpcfg(brokerPort) ne $cfg(brokerPort) \
         || $tmpcfg(userpass) ne $cfg(userpass) \

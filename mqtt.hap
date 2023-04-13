@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.117 $
-# $Date: 2023/04/06 22:09:48 $
+# $Revision: 1.118 $
+# $Date: 2023/04/13 00:59:36 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.117 2023/04/06 22:09:48 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.118 2023/04/13 00:59:36 ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -1268,6 +1268,7 @@ proc updateGUI {type name column value} {
 }
 
 proc subscribe {{type sub}} {
+    global lastSub
 
     if {$type ni {sub unsub}} {return}
 
@@ -1290,6 +1291,10 @@ proc subscribe {{type sub}} {
         }
     }
     sendMqtt $type cmnd "<homevision/#" "" hvrecv
+    if {$type eq "unsub"} {
+        runSubscribe -1
+        runSubscribe -2
+    }
 }
 
 # Determine callback
@@ -4350,6 +4355,7 @@ proc cfg_macro_set {w var} {
     }
     createmacrolist $w $var
 }
+
 #! Create macro list for drop-down box
 proc createmacrolist {widget var} {
     upvar #0 $var macro
@@ -4387,18 +4393,21 @@ proc runSubscribe {num} {
 #   debug "num:$num,1:$cfg(SubTopic1),2:$cfg(SubTopic2),lastsub: 1:$lastSub(SubTopic1),2:$lastSub(SubTopic2)" red
 
     set anum [expr {abs($num)}]
-    if {$cfg(SubTopic$anum) eq "" || $num ni {1 2 -1 -2}} return
+    if {$num ni {1 2 -1 -2}} return
 
-    if {$lastSub(SubTopic$anum) ne $cfg(SubTopic$anum)} {
+    if {$lastSub(SubTopic$anum) ne $cfg(SubTopic$anum) \
+        && $lastSub(SubTopic$anum) ne ""} {
         mqttComm unsub $lastSub(SubTopic$anum) runSubscribecb
     }
 
-    if {$num in {1 2}} {
-        mqttComm sub $cfg(SubTopic$anum) runSubscribecb
-        set lastSub(SubTopic$anum) $cfg(SubTopic$anum)
-    } elseif {$num in {-1 -2}} {
-        mqttComm unsub $cfg(SubTopic$anum) runSubscribecb
-        set lastSub(SubTopic$anum) ""
+    if {$cfg(SubTopic$anum) ne ""} {
+        if {$num in {1 2}} {
+            mqttComm sub $cfg(SubTopic$anum) runSubscribecb
+            set lastSub(SubTopic$anum) $cfg(SubTopic$anum)
+        } elseif {$num in {-1 -2}} {
+            mqttComm unsub $cfg(SubTopic$anum) runSubscribecb
+            set lastSub(SubTopic$anum) ""
+        }
     }
 #   debug "num:$num,1:$cfg(SubTopic1),2:$cfg(SubTopic2),lastsub: 1:$lastSub(SubTopic1),2:$lastSub(SubTopic2)" red
 }

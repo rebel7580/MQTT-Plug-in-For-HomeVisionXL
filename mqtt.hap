@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.118 $
-# $Date: 2023/04/13 00:59:36 $
+# $Revision: 1.122 $
+# $Date: 2023/05/20 00:55:45 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.118 2023/04/13 00:59:36 ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.122 2023/05/20 00:55:45 Ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -158,13 +158,13 @@ proc connect {} {
 hvImport mqttReady
 proc mqttStatusrecv {topic payload args} {
 
-    mqttLog "mqttStatus:$payload;" red     
+    mqttLog "mqttStatus:$payload;" red
     mqttReady $payload
 }
 
 proc mqttPublishrecv {topic payload args} {
 
-    debug "mqttPublish:[dict get $payload topic],[dict get $payload data];" red     
+    debug "mqttPublish:[dict get $payload topic],[dict get $payload data];" red
 }
 
 proc disconnect {} {
@@ -1216,7 +1216,7 @@ proc objupdate {type {publish 1}} {
         set objstat [getStatus $row]
         dict with objstat {
            if {$newstate ne $state || $newlevel ne $level || $newsetp ne $model} {
-                updateGUI "obj" $name state $newstate 
+                updateGUI "obj" $name state $newstate
                 updateGUI "obj" $name level $newlevel
                 mk::set cfg.x10!$row state $newstate level $newlevel model $newsetp
                  debug "$object:$id-$topic!:$state->$newstate,$level->$newlevel,$model->$newsetp;cmd:$cmd"
@@ -1311,17 +1311,56 @@ proc customCmnd {cmnd cmdtrig trigstdcus} {
 }
 
 # Send command
-proc sendCmd {name cmd} {
+proc sendCmd {args} {
 
-    set retain 0
+    debug "sendcmd:args:$args" red
+
+    set arglog -1
+    set argretain -1
+
+    while 1 {
+    debug "args:$args" green
+        if {[lindex $args 0] eq "-log"} {
+            set arglog 1
+            set args [lrange $args 1 end]
+            continue
+        }
+        if {[lindex $args 0] eq "-nolog"} {
+            set arglog 0
+            set args [lrange $args 1 end]
+            continue
+        }
+        if {[lindex $args 0] eq "-retain"} {
+            set argretain 1
+            set args [lrange $args 1 end]
+            continue
+        }
+        if {[lindex $args 0] eq "-noretain"} {
+            set argretain 0
+            set args [lrange $args 1 end]
+            continue
+        }
+        break
+    }
+
+    set cmd [lassign $args name]
+
     if {$name in {pub}} {
         set cmd [join [lassign $cmd topic]]
         set topic [string trim $topic {\}\{}]
-        if {[lindex $cmd end] eq "retain"} {
+        if {$argretain in {0 1}} {
+            set retain $argretain
+        } elseif {[lindex $cmd end] eq "retain"} {
             set cmd [lrange $cmd 0 end-1]
             set retain 1
+        } else {
+            set retain 0
         }
-        set log 1
+        if {$arglog in {0 1}} {
+            set log $arglog
+        } else {
+            set log 1
+        }
     } elseif {$name in {sub unsub}} {
         set cb [lassign $cmd topic]
         set topic [string trim $topic {\}\{}]
@@ -1332,7 +1371,12 @@ proc sendCmd {name cmd} {
         } else {
             set cmd "subrecv"
         }
-        set log 0
+        set retain 0
+        if {$arglog in {0 1}} {
+            set log $arglog
+        } else {
+            set log 0
+        }
     } else {
         foreach device {"devices" "x10"} {
             set row [mk::select cfg.$device name $name]
@@ -1341,25 +1385,27 @@ proc sendCmd {name cmd} {
         if {$row eq ""} {return}
         lassign [mk::get cfg.$device!$row topic loglevel retain] topic loglevel retain
         set name "pub"
-        set log [expr {($loglevel & 0x02)>>1}]
+        if {$argretain in {0 1}} {
+            set retain $argretain
+        }
+        if {$arglog in {0 1}} {
+            set log $arglog
+        } else {
+            set log [expr {($loglevel & 0x02)>>1}]
+        }
+        set cmd [join $cmd]
+        if {[string tolower $cmd] in {1 "on"}} {
+            set cmd "on"
+        } elseif {[string tolower $cmd] in {0 "off"}} {
+            set cmd "off"
+        } elseif {[string tolower $cmd] in {2 "toggle"}} {
+            set cmd "toggle"
+        } elseif {[string tolower $cmd] in {"state"}} {
+            set cmd ""
+        }
     }
-    sendMqtt $name cmnd $topic pwr $cmd $log $retain
-}
 
-# Create command to send
-proc createCmd {cmd} {
-    if {[string tolower $cmd] in {1 "on"}} {
-        set state "on"
-    } elseif {[string tolower $cmd] in {0 "off"}} {
-        set state "off"
-    } elseif {[string tolower $cmd] in {2 "toggle"}} {
-        set state "toggle"
-    } elseif {[string tolower $cmd] in {"state"}} {
-        set state ""
-    } else {
-        set state $cmd
-    }
-    return $state
+    sendMqtt $name cmnd $topic pwr $cmd $log $retain
 }
 
 proc sendMqtt {action pre topic post cmd args} {
@@ -1616,7 +1662,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
     } else {
         set fid "[string toupper [string range $object 0 1]]-$id"
     }
-    
+
     set objsuffix [string totitle $object]
 
     if {$object eq "flag_b"} {
@@ -1633,7 +1679,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
     if {$object eq "timer"} {
         append name "_state"
     }
-    
+
     set uid $cfg(clientID)_$fid
 
     regsub {<} $topic "/$cfg(statPrefix)/" stat
@@ -1664,7 +1710,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
     if {$nodevice == 0} {
         dict set discov dev [format {{"ids":["%s"],"name":"%s","mdl":"%s","mf":"%s"}} "$cfg(clientID)_$objsuffix" "HomeVisionXL $objsuffix" $model $man]
     }
-    
+
     switch $object {
         x10 -
         light {
@@ -1852,24 +1898,24 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov fan_mode_cmd_t "$cmnd"
             dict set discov "~" "$stat"
             dict set discov curr_temp_t "~"
-            dict set discov curr_temp_tpl "{{ value_json.Temperature }}"   
+            dict set discov curr_temp_tpl "{{ value_json.Temperature }}"
             dict set discov mode_stat_t "~"
-            dict set discov mode_stat_tpl "{{ value_json.HVAC|lower }}"   
+            dict set discov mode_stat_tpl "{{ value_json.HVAC|lower }}"
             if {$preset == 1} {
                 dict set discov pr_modes {["run","hold"]}
                 dict set discov pr_mode_cmd_t "$cmnd"
                 dict set discov pr_mode_stat_t "~"
-                dict set discov pr_mode_val_tpl "{{ value_json.Control|lower }}"   
+                dict set discov pr_mode_val_tpl "{{ value_json.Control|lower }}"
             } else {
                 dict set discov hold_modes {["run","hold"]}
                 dict set discov hold_cmd_t "$cmnd"
                 dict set discov hold_stat_t "~"
-                dict set discov hold_stat_tpl "{{ value_json.Control|lower }}"   
+                dict set discov hold_stat_tpl "{{ value_json.Control|lower }}"
             }
             dict set discov temp_stat_t "~"
-            dict set discov temp_stat_tpl "{{ value_json.Setpoint }}"   
+            dict set discov temp_stat_tpl "{{ value_json.Setpoint }}"
             dict set discov fan_mode_stat_t "~"
-            dict set discov fan_mode_stat_tpl "{{ \\\"fan\\\" + value_json.Fan|lower }}"   
+            dict set discov fan_mode_stat_tpl "{{ \\\"fan\\\" + value_json.Fan|lower }}"
             dict set discov temp_unit "F"
             dict set discov precision 1.0
             dict set discov max_temp 99
@@ -1909,7 +1955,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
         lappend jl [format $fmt $key [dict get $discov $key]]
     }
     append js "{" [join $jl ","] "}"
-    
+
     set fulltopic "homeassistant/$device/$uid/config"
     debug $fulltopic darkblue
     debug $js blue
@@ -2000,7 +2046,7 @@ proc restorelogging {} {
 #    mqttComm {type} {options} action topic {payload}
 #
 # Examples:
-#    mqttComm {-log} sub|unsub  <topic>|topic callback 
+#    mqttComm {-log} sub|unsub  <topic>|topic callback
 #    mqttComm {-exactstat -nodim -log -retain} stat|cmnd <topic>|topic {payload}
 #    mqttComm {-log -retain} pub <i>topic</i> {payload}
 #
@@ -2100,7 +2146,7 @@ proc netioaction {args} {
     set state [lassign $args type name]
     if {$type ne $cfg(netioType)} {return ""}
     if {$state eq ""} {return ""}
-    sendCmd $name [createCmd $state]
+    sendCmd $name $state
 }
 
 # netio is called by NetIO "get" command.
@@ -2150,19 +2196,19 @@ debug "netio:$args" blue
 # "device name" must match an allowed device name.
 # For "pub": if payload ends in "retain", published message's retain flag is set.
 # ";" should be config's serPost (serial terminator character(s)),
-#     which should not be any character(s) present in name.
+#     which should not be any character(s) present in payload.
 proc mqttserial {data} {
     global cfg
 
     debug "serial: $data" red
-    set fmt [format {%1$s (\w+)\s+([^%2$s]+)%2$s} $cfg(serPre) $cfg(serPost)]
-    if {![regexp -nocase $fmt $data match name state]} {
+    set fmt [format {%1$s ([^%2$s]+)%2$s} $cfg(serPre) $cfg(serPost)]
+    if {![regexp -nocase $fmt $data match name]} {
         debug "fail"
         return 0
     } elseif {$name eq ""} {
         return -1
     } else {
-        sendCmd $name [createCmd $state]
+        sendCmd {*}$name
         return [string length $match]
     }
 }
@@ -2402,7 +2448,7 @@ proc saveconfig {{top ""}} {
 
 # MQTT configuration screen
 proc cfg_mqtt {} {
-    global cfg noid
+    global cfg noid retain
 
     if {[winfo exists .mqtt]} {
         wm withdraw .mqtt
@@ -2616,7 +2662,7 @@ proc cfg_mqtt {} {
     ttk::entry .mqtt.f.f2.e16 -width 25 -justify center -textvariable cfg(password) -show *
 
     ttk::separator .mqtt.f.f2.sep2
-    
+
     ttk::checkbutton .mqtt.f.f2.c31 -variable cfg(logging) -text "Create log file" -command cfg_logsel
     ttk::label .mqtt.f.f2.l31 -text "Log Folder:" -anchor e
     ttk::entry .mqtt.f.f2.e31  -textvariable cfg(logpath) -state readonly
@@ -2705,12 +2751,14 @@ proc cfg_mqtt {} {
     ttk::label .mqtt.f.f5.p.lm1 -text "Payload:" -anchor e
     ttk::entry .mqtt.f.f5.p.em1 -width 30 -justify center -textvariable cfg(PubMsg1)
     ttk::button .mqtt.f.f5.p.bp1 -text "Publish"  -command [list runPublish 1]
+    ttk::checkbutton .mqtt.f.f5.p.c1 -variable retain(1)
 
     ttk::label .mqtt.f.f5.p.lt2 -text "Topic:"  -anchor e
     ttk::entry .mqtt.f.f5.p.et2 -width 30 -justify center -textvariable cfg(PubTopic2)
     ttk::label .mqtt.f.f5.p.lm2 -text "Payload:" -anchor e
     ttk::entry .mqtt.f.f5.p.em2 -width 30 -justify center -textvariable cfg(PubMsg2)
     ttk::button .mqtt.f.f5.p.bp2 -text "Publish"  -command [list runPublish 2]
+    ttk::checkbutton .mqtt.f.f5.p.c2 -variable retain(2)
 
     ttk::labelframe .mqtt.f.f5.s -text "Subscribe:"
     ttk::label .mqtt.f.f5.s.lt1 -text "Topic:"  -anchor e
@@ -2723,20 +2771,20 @@ proc cfg_mqtt {} {
     ttk::button .mqtt.f.f5.s.bs2 -text "Subscribe" -command [list runSubscribe 2]
     ttk::button .mqtt.f.f5.s.bu2 -text "Unsubscribe" -command [list runSubscribe -2]
 
-    grid .mqtt.f.f5.p.lt1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.lm1 .mqtt.f.f5.p.em1 .mqtt.f.f5.p.bp1 -sticky nws -padx 3
-    grid .mqtt.f.f5.p.lt2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.lm2 .mqtt.f.f5.p.em2 .mqtt.f.f5.p.bp2 -sticky nws -padx 3
-    grid configure .mqtt.f.f5.p     -sticky nes -padx 3
-    
+    grid .mqtt.f.f5.p.lt1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.lm1 .mqtt.f.f5.p.em1 .mqtt.f.f5.p.c1 .mqtt.f.f5.p.bp1 -sticky we -padx 3
+    grid .mqtt.f.f5.p.lt2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.lm2 .mqtt.f.f5.p.em2 .mqtt.f.f5.p.c2 .mqtt.f.f5.p.bp2 -sticky we -padx 3
+    grid configure .mqtt.f.f5.p     -sticky new -padx 3
+
     grid .mqtt.f.f5.s.lt1 .mqtt.f.f5.s.et1 .mqtt.f.f5.s.bs1 .mqtt.f.f5.s.bu1 -sticky nws -padx 3
     grid .mqtt.f.f5.s.lt2 .mqtt.f.f5.s.et2 .mqtt.f.f5.s.bs2 .mqtt.f.f5.s.bu2 -sticky nws -padx 3
-    grid configure .mqtt.f.f5.s     -sticky nes -padx 3
+    grid configure .mqtt.f.f5.s     -sticky new -padx 3
 
-#    grid .mqtt.f.f5.p -column 0 -columnspan 2 -sticky news -padx 3
-    grid .mqtt.f.f5.p -columnspan 3 -ipady 5 -sticky news -padx 3 -pady 10
-    grid .mqtt.f.f5.s -columnspan 3 -ipady 5 -sticky news -padx 3 -pady 10
-#    grid rowconfigure .mqtt.f.f5 .mqtt.f.f5.p .mqtt.f.f5.s -weight 1
-#    grid columnconfigure .mqtt.f.f5 1 -weight 1
+    grid columnconfigure .mqtt.f.f5.p all -weight 1
+    grid columnconfigure .mqtt.f.f5 all -weight 1
     grid .mqtt.f.f5 -sticky news  -padx 5 -pady 5
+
+    set retain(1) 0
+    set retain(2) 0
 
     .mqtt.f add .mqtt.f.f5 -text "Pub/Sub" -underline 0
 
@@ -2796,9 +2844,9 @@ proc cfg_mqtt {} {
 
     .mqtt.f.f4.c1 current 0
     createObjects
-    
+
     .mqtt.f.f4.c3 set "Test"
-    
+
     .mqtt.f add .mqtt.f.f4 -text "Discovery" -state hidden
 
     grid .mqtt.f -sticky snew -padx 5 -pady 5 -columnspan 3
@@ -2815,7 +2863,7 @@ proc cfg_mqtt {} {
     }
 
     wm protocol .mqtt WM_DELETE_WINDOW {.mqtt.b3 invoke}
-    
+
     bind .mqtt <F4> {enableDiscovery}
 
     if {[regexp {\+-?[0-9]+\+-?[0-9]+} $cfg(geometry)]} {
@@ -3076,7 +3124,7 @@ proc cfg_rtclkdlg {cmd {type ext}} {
         }
     }
     if {$cmd ne ""} {
-        sendCmd $name [createCmd $cmd]
+        sendCmd $name $cmd
     }
 }
 
@@ -3642,7 +3690,7 @@ proc cfg_object_adddlg {} {
             .mqtt.usr.c3 current 0
         }
     } else {
-	    .mqtt.usr.c3 current 0
+        .mqtt.usr.c3 current 0
     }
     grid .mqtt.usr.f.b1 .mqtt.usr.f.b2 -padx 20 -pady 4
     grid anchor .mqtt.usr.f center
@@ -4379,12 +4427,17 @@ proc createmacrolist {widget var} {
 }
 
 proc runPublish {num} {
-    global cfg
+    global cfg retain
 
+debug "runPublish:$num,$retain($num);" red
     if {$num ni {1 2}} return
-
     if {$cfg(PubTopic$num) eq ""} return
-    mqttComm pub $cfg(PubTopic$num) $cfg(PubMsg$num)
+    if {$retain($num) == 1} {
+debug "pub retain" darkgreen
+        mqttComm -retain pub $cfg(PubTopic$num) $cfg(PubMsg$num)
+    } else {
+        mqttComm pub $cfg(PubTopic$num) $cfg(PubMsg$num)
+    }
 }
 
 proc runSubscribe {num} {

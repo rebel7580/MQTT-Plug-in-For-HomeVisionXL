@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.122 $
-# $Date: 2023/05/20 00:55:45 $
+# $Revision: 1.123 $
+# $Date: 2023/05/27 04:30:15 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.122 2023/05/20 00:55:45 Ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.123 2023/05/27 04:30:15 Ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -2751,14 +2751,14 @@ proc cfg_mqtt {} {
     ttk::label .mqtt.f.f5.p.lm1 -text "Payload:" -anchor e
     ttk::entry .mqtt.f.f5.p.em1 -width 30 -justify center -textvariable cfg(PubMsg1)
     ttk::button .mqtt.f.f5.p.bp1 -text "Publish"  -command [list runPublish 1]
-    ttk::checkbutton .mqtt.f.f5.p.c1 -variable retain(1)
+    ttk::checkbutton .mqtt.f.f5.p.c1 -variable pubRetain(1)
 
     ttk::label .mqtt.f.f5.p.lt2 -text "Topic:"  -anchor e
     ttk::entry .mqtt.f.f5.p.et2 -width 30 -justify center -textvariable cfg(PubTopic2)
     ttk::label .mqtt.f.f5.p.lm2 -text "Payload:" -anchor e
     ttk::entry .mqtt.f.f5.p.em2 -width 30 -justify center -textvariable cfg(PubMsg2)
     ttk::button .mqtt.f.f5.p.bp2 -text "Publish"  -command [list runPublish 2]
-    ttk::checkbutton .mqtt.f.f5.p.c2 -variable retain(2)
+    ttk::checkbutton .mqtt.f.f5.p.c2 -variable pubRetain(2)
 
     ttk::labelframe .mqtt.f.f5.s -text "Subscribe:"
     ttk::label .mqtt.f.f5.s.lt1 -text "Topic:"  -anchor e
@@ -2783,8 +2783,8 @@ proc cfg_mqtt {} {
     grid columnconfigure .mqtt.f.f5 all -weight 1
     grid .mqtt.f.f5 -sticky news  -padx 5 -pady 5
 
-    set retain(1) 0
-    set retain(2) 0
+    set pubRetain(1) 0
+    set pubRetain(2) 0
 
     .mqtt.f add .mqtt.f.f5 -text "Pub/Sub" -underline 0
 
@@ -4427,12 +4427,12 @@ proc createmacrolist {widget var} {
 }
 
 proc runPublish {num} {
-    global cfg retain
+    global cfg pubRetain
 
-debug "runPublish:$num,$retain($num);" red
+debug "runPublish:$num,$pubpubRetain($num);" red
     if {$num ni {1 2}} return
     if {$cfg(PubTopic$num) eq ""} return
-    if {$retain($num) == 1} {
+    if {$pubpubRetain($num) == 1} {
 debug "pub retain" darkgreen
         mqttComm -retain pub $cfg(PubTopic$num) $cfg(PubMsg$num)
     } else {

@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.123 $
-# $Date: 2023/05/27 04:30:15 $
+# $Revision: 1.124 $
+# $Date: 2023/06/15 03:23:20 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.123 2023/05/27 04:30:15 Ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.124 2023/06/15 03:23:20 Ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -2448,7 +2448,7 @@ proc saveconfig {{top ""}} {
 
 # MQTT configuration screen
 proc cfg_mqtt {} {
-    global cfg noid retain
+    global cfg noid retain pubRetain
 
     if {[winfo exists .mqtt]} {
         wm withdraw .mqtt
@@ -2783,8 +2783,10 @@ proc cfg_mqtt {} {
     grid columnconfigure .mqtt.f.f5 all -weight 1
     grid .mqtt.f.f5 -sticky news  -padx 5 -pady 5
 
-    set pubRetain(1) 0
-    set pubRetain(2) 0
+    array set pubRetain {
+        1 0
+        2 0
+    }
 
     .mqtt.f add .mqtt.f.f5 -text "Pub/Sub" -underline 0
 
@@ -4429,10 +4431,10 @@ proc createmacrolist {widget var} {
 proc runPublish {num} {
     global cfg pubRetain
 
-debug "runPublish:$num,$pubpubRetain($num);" red
+debug "runPublish:$num,$pubRetain($num);" red
     if {$num ni {1 2}} return
     if {$cfg(PubTopic$num) eq ""} return
-    if {$pubpubRetain($num) == 1} {
+    if {$pubRetain($num) == 1} {
 debug "pub retain" darkgreen
         mqttComm -retain pub $cfg(PubTopic$num) $cfg(PubMsg$num)
     } else {

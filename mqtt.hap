@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.124 $
-# $Date: 2023/06/15 03:23:20 $
+# $Revision: 1.129 $
+# $Date: 2024/03/24 18:57:34 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.124 2023/06/15 03:23:20 Ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.129 2024/03/24 18:57:34 Ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -70,10 +70,21 @@ array set cfg {
 }
 set cfg(txtext) [expr {$tcl_platform(platform) eq "windows" ? ".txt" : ""}]
 
+set pubSubLists {
+    PubTopic1         ""
+    PubTopic2         ""
+    PubMsg1           ""
+    PubMsg2           ""
+    SubTopic1         ""
+    SubTopic2         ""
+}
+
 array set lastSub {
     SubTopic1         ""
     SubTopic2         ""
 }
+
+set freezeLogWindow 0
 
 set x10types {
     none  ""
@@ -121,6 +132,7 @@ set noid 0
 set nous 0
 set yesretain 0
 set nodevice 0
+set mqttstatus {}
 
 # define mqtt log command
 if {[package require mqtt] >= 2} {
@@ -157,14 +169,27 @@ proc connect {} {
 
 hvImport mqttReady
 proc mqttStatusrecv {topic payload args} {
+    global mqttstatus
 
     mqttLog "mqttStatus:$payload;" red
+    set mqttstatus $payload
     mqttReady $payload
 }
 
 proc mqttPublishrecv {topic payload args} {
 
     debug "mqttPublish:[dict get $payload topic],[dict get $payload data];" red
+}
+
+hvPublic mqttStatus
+proc mqttStatus {{type state}} {
+    global mqttstatus
+
+    if {$type eq "all"} {
+        return $mqttstatus
+    } else {
+        return [dict get $mqttstatus $type]
+    }
 }
 
 proc disconnect {} {
@@ -1292,8 +1317,8 @@ proc subscribe {{type sub}} {
     }
     sendMqtt $type cmnd "<homevision/#" "" hvrecv
     if {$type eq "unsub"} {
-        runSubscribe -1
-        runSubscribe -2
+        runSubscribe -1 .mqtt.f.f5.s.et1
+        runSubscribe -2 .mqtt.f.f5.s.et2
     }
 }
 
@@ -1870,7 +1895,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
                     dict set discov dev_cla $dc
                     set uom [string index $uom 1]
                     if {$uom in {F f C c}} {
-                        dict set discov unit_of_meas [string toupper $uom]
+                        dict set discov unit_of_meas "[string toupper $uom]"
                     }
                 }
             }
@@ -2219,7 +2244,7 @@ proc mqttserial {data} {
 
 # Get the config info from cfg file
 proc loadconfig {} {
-    global cfgfile cfgfileroot cfg
+    global cfgfile cfgfileroot cfg pubSubLists
     package require Mk4tcl
 
     set suffix [hvVariable ApplicationSuffix]
@@ -2411,6 +2436,10 @@ proc loadconfig {} {
         set saveflag 1
     }
 
+    foreach type {PubTopic1 PubTopic2 PubMsg1 PubMsg2 SubTopic1 SubTopic2} {
+        dict set pubSubLists $type $cfg($type)
+    }
+
     if {$saveflag} {saveconfig}
 
     # clear state and status for devices
@@ -2448,7 +2477,7 @@ proc saveconfig {{top ""}} {
 
 # MQTT configuration screen
 proc cfg_mqtt {} {
-    global cfg noid retain pubRetain
+    global cfg noid retain pubRetain pubSubLists freezeLogWindow
 
     if {[winfo exists .mqtt]} {
         wm withdraw .mqtt
@@ -2746,40 +2775,86 @@ proc cfg_mqtt {} {
     # PubSub Tab
     ttk::frame .mqtt.f.f5
     ttk::labelframe .mqtt.f.f5.p -text "Publish:"
-    ttk::label .mqtt.f.f5.p.lt1 -text "Topic:"  -anchor e
-    ttk::entry .mqtt.f.f5.p.et1 -width 30 -justify center -textvariable cfg(PubTopic1)
-    ttk::label .mqtt.f.f5.p.lm1 -text "Payload:" -anchor e
-    ttk::entry .mqtt.f.f5.p.em1 -width 30 -justify center -textvariable cfg(PubMsg1)
-    ttk::button .mqtt.f.f5.p.bp1 -text "Publish"  -command [list runPublish 1]
+    ttk::label .mqtt.f.f5.p.lt1 -text "Topic:"  -anchor w
+    ttk::combobox .mqtt.f.f5.p.et1 -state normal -width 30 -justify center -textvariable cfg(PubTopic1)
+    bind .mqtt.f.f5.p.et1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.et1 PubTopic1]
+    ttk::label .mqtt.f.f5.p.lm1 -text "Payload:" -anchor w
+    ttk::combobox .mqtt.f.f5.p.em1 -state normal -width 30 -justify center
+    bind .mqtt.f.f5.p.em1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.em1 PubMsg1]
+    ttk::button .mqtt.f.f5.p.bp1 -text "Publish"  -command [list runPublish 1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.em1]
     ttk::checkbutton .mqtt.f.f5.p.c1 -variable pubRetain(1)
 
-    ttk::label .mqtt.f.f5.p.lt2 -text "Topic:"  -anchor e
-    ttk::entry .mqtt.f.f5.p.et2 -width 30 -justify center -textvariable cfg(PubTopic2)
-    ttk::label .mqtt.f.f5.p.lm2 -text "Payload:" -anchor e
-    ttk::entry .mqtt.f.f5.p.em2 -width 30 -justify center -textvariable cfg(PubMsg2)
-    ttk::button .mqtt.f.f5.p.bp2 -text "Publish"  -command [list runPublish 2]
+    ttk::label .mqtt.f.f5.p.lt2 -text "Topic:"  -anchor w
+    ttk::combobox .mqtt.f.f5.p.et2 -state normal -width 30 -justify center
+    bind .mqtt.f.f5.p.et2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.et2 PubTopic2]
+    ttk::label .mqtt.f.f5.p.lm2 -text "Payload:" -anchor w
+    ttk::combobox .mqtt.f.f5.p.em2 -state normal -width 30 -justify center
+    bind .mqtt.f.f5.p.em2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.em2 PubMsg2]
+    ttk::button .mqtt.f.f5.p.bp2 -text "Publish"  -command [list runPublish 2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.em2]
     ttk::checkbutton .mqtt.f.f5.p.c2 -variable pubRetain(2)
 
     ttk::labelframe .mqtt.f.f5.s -text "Subscribe:"
-    ttk::label .mqtt.f.f5.s.lt1 -text "Topic:"  -anchor e
-    ttk::entry .mqtt.f.f5.s.et1 -width 30 -justify center -textvariable cfg(SubTopic1)
-    ttk::button .mqtt.f.f5.s.bs1 -text "Subscribe" -command [list runSubscribe 1]
-    ttk::button .mqtt.f.f5.s.bu1 -text "Unsubscribe" -command [list runSubscribe -1]
+    ttk::label .mqtt.f.f5.s.lt1 -text "Topic:" -anchor w
+    ttk::combobox .mqtt.f.f5.s.et1 -state normal -width 30 -justify center
+    bind .mqtt.f.f5.s.et1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.s.et1 SubTopic1]
+    ttk::button .mqtt.f.f5.s.bs1 -text "Subscribe" -command [list runSubscribe 1 .mqtt.f.f5.s.et1]
+    ttk::button .mqtt.f.f5.s.bu1 -text "Unsubscribe" -command [list runSubscribe -1 .mqtt.f.f5.s.et1]
 
-    ttk::label .mqtt.f.f5.s.lt2 -text "Topic:"  -anchor e
-    ttk::entry .mqtt.f.f5.s.et2 -width 30 -justify center -textvariable cfg(SubTopic2)
-    ttk::button .mqtt.f.f5.s.bs2 -text "Subscribe" -command [list runSubscribe 2]
-    ttk::button .mqtt.f.f5.s.bu2 -text "Unsubscribe" -command [list runSubscribe -2]
+    ttk::label .mqtt.f.f5.s.lt2 -text "Topic:" -anchor w
+    ttk::combobox .mqtt.f.f5.s.et2 -state normal -width 30 -justify center
+    bind .mqtt.f.f5.s.et2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.s.et2 SubTopic2]
+    ttk::button .mqtt.f.f5.s.bs2 -text "Subscribe" -command [list runSubscribe 2 .mqtt.f.f5.s.et2]
+    ttk::button .mqtt.f.f5.s.bu2 -text "Unsubscribe" -command [list runSubscribe -2 .mqtt.f.f5.s.et2]
+
+    ttk::labelframe .mqtt.f.f5.l -text "Log:"
+    text .mqtt.f.f5.l.t -yscrollcommand {.mqtt.f.f5.l.s set} -state disabled \
+        -cursor "" -exportselection 1
+    ttk::scrollbar .mqtt.f.f5.l.s -command {.mqtt.f.f5.l.t yview}
+    pack .mqtt.f.f5.l.s -side right -fill y
+    pack .mqtt.f.f5.l.t -side right -fill both -expand 1
+    .mqtt.f.f5.p.et1 configure -foreground #c000e0
+    .mqtt.f.f5.p.et2 configure -foreground #ff0000
+    .mqtt.f.f5.s.et1 configure -foreground #00c000
+    .mqtt.f.f5.s.et2 configure -foreground #0000ff
+    .mqtt.f.f5.l.t tag configure pub1 -foreground #c000e0 -background #f0f0f0
+    .mqtt.f.f5.l.t tag configure pub2 -foreground #ff0000 -background #f0f0f0
+    .mqtt.f.f5.l.t tag configure sub1 -foreground #00c000
+    .mqtt.f.f5.l.t tag configure sub2 -foreground #0000ff
+    .mqtt.f.f5.l.t tag configure uk -foreground #000000
+    set m [menu .pubsubmenu]
+    $m add command -label "Select all" -command {
+        .mqtt.f.f5.l.t tag add sel 1.0 end-1c
+    }
+    $m add command -label "Copy" -command {
+        event generate .mqtt.f.f5.l.t <<Copy>>
+    }
+    $m add separator
+    $m add command -label "Clear" -command {
+        .mqtt.f.f5.l.t configure -state normal
+        .mqtt.f.f5.l.t delete 1.0 end
+        .mqtt.f.f5.l.t configure -state disabled
+    }
+    $m add separator
+    $m add command -label "Freeze view" -command {
+        set freezeLogWindow 1
+    }
+    $m add command -label "UnFreeze view" -command {
+        set freezeLogWindow 0
+    }
+    bind .mqtt.f.f5.l.t <Button-3> {tk_popup .pubsubmenu %X %Y}
 
     grid .mqtt.f.f5.p.lt1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.lm1 .mqtt.f.f5.p.em1 .mqtt.f.f5.p.c1 .mqtt.f.f5.p.bp1 -sticky we -padx 3
     grid .mqtt.f.f5.p.lt2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.lm2 .mqtt.f.f5.p.em2 .mqtt.f.f5.p.c2 .mqtt.f.f5.p.bp2 -sticky we -padx 3
     grid configure .mqtt.f.f5.p     -sticky new -padx 3
 
-    grid .mqtt.f.f5.s.lt1 .mqtt.f.f5.s.et1 .mqtt.f.f5.s.bs1 .mqtt.f.f5.s.bu1 -sticky nws -padx 3
-    grid .mqtt.f.f5.s.lt2 .mqtt.f.f5.s.et2 .mqtt.f.f5.s.bs2 .mqtt.f.f5.s.bu2 -sticky nws -padx 3
+    grid .mqtt.f.f5.s.lt1 .mqtt.f.f5.s.et1 .mqtt.f.f5.s.bs1 .mqtt.f.f5.s.bu1 -sticky we -padx 3
+    grid .mqtt.f.f5.s.lt2 .mqtt.f.f5.s.et2 .mqtt.f.f5.s.bs2 .mqtt.f.f5.s.bu2 -sticky we -padx 3
     grid configure .mqtt.f.f5.s     -sticky new -padx 3
-
-    grid columnconfigure .mqtt.f.f5.p all -weight 1
+    grid columnconfigure .mqtt.f.f5.p {1 3} -weight 2
+    grid columnconfigure .mqtt.f.f5.p {0 2 4 5} -weight 0
+    grid columnconfigure .mqtt.f.f5.s {1} -weight 2
+    grid columnconfigure .mqtt.f.f5.s {0 2 3} -weight 0
+    grid configure .mqtt.f.f5.l     -sticky new -padx 3
     grid columnconfigure .mqtt.f.f5 all -weight 1
     grid .mqtt.f.f5 -sticky news  -padx 5 -pady 5
 
@@ -2787,6 +2862,13 @@ proc cfg_mqtt {} {
         1 0
         2 0
     }
+
+    updatepubSubCombos .mqtt.f.f5.p.et1 PubTopic1 1
+    updatepubSubCombos .mqtt.f.f5.p.em1 PubMsg1   1
+    updatepubSubCombos .mqtt.f.f5.p.et2 PubTopic2 1
+    updatepubSubCombos .mqtt.f.f5.p.em2 PubMsg2   1
+    updatepubSubCombos .mqtt.f.f5.s.et1 SubTopic1 1
+    updatepubSubCombos .mqtt.f.f5.s.et2 SubTopic2 1
 
     .mqtt.f add .mqtt.f.f5 -text "Pub/Sub" -underline 0
 
@@ -4428,50 +4510,144 @@ proc createmacrolist {widget var} {
     }
 }
 
-proc runPublish {num} {
+proc runPublish {num wp wm} {
     global cfg pubRetain
 
 debug "runPublish:$num,$pubRetain($num);" red
     if {$num ni {1 2}} return
     if {$cfg(PubTopic$num) eq ""} return
+
+    updatepubSubCombos $wp PubTopic$num
+    updatepubSubCombos $wm PubMsg$num
+
     if {$pubRetain($num) == 1} {
-debug "pub retain" darkgreen
+        debug "pub retain $num" darkgreen
         mqttComm -retain pub $cfg(PubTopic$num) $cfg(PubMsg$num)
     } else {
         mqttComm pub $cfg(PubTopic$num) $cfg(PubMsg$num)
     }
+    pubsublog "p$num: Published $cfg(PubTopic$num): $cfg(PubMsg$num)"
 }
 
-proc runSubscribe {num} {
+proc runSubscribe {num ws} {
     global cfg lastSub
 
-#   debug "num:$num,1:$cfg(SubTopic1),2:$cfg(SubTopic2),lastsub: 1:$lastSub(SubTopic1),2:$lastSub(SubTopic2)" red
-
-    set anum [expr {abs($num)}]
     if {$num ni {1 2 -1 -2}} return
+    set anum [expr {abs($num)}]
+
+    updatepubSubCombos $ws SubTopic$anum
 
     if {$lastSub(SubTopic$anum) ne $cfg(SubTopic$anum) \
         && $lastSub(SubTopic$anum) ne ""} {
         mqttComm unsub $lastSub(SubTopic$anum) runSubscribecb
+        pubsublog "s$anum: Unsubscribed from $lastSub(SubTopic$anum)"
     }
 
     if {$cfg(SubTopic$anum) ne ""} {
         if {$num in {1 2}} {
             mqttComm sub $cfg(SubTopic$anum) runSubscribecb
+            pubsublog "s$anum: Subscribed to $cfg(SubTopic$anum)"
             set lastSub(SubTopic$anum) $cfg(SubTopic$anum)
         } elseif {$num in {-1 -2}} {
             mqttComm unsub $cfg(SubTopic$anum) runSubscribecb
+            pubsublog "s$anum: Unsubscribed from $cfg(SubTopic$anum)"
             set lastSub(SubTopic$anum) ""
         }
     }
-#   debug "num:$num,1:$cfg(SubTopic1),2:$cfg(SubTopic2),lastsub: 1:$lastSub(SubTopic1),2:$lastSub(SubTopic2)" red
 }
 
 hvPublic runSubscribecb
 proc runSubscribecb {topic payload args} {
+    global lastSub cfg
 
-    debug "Topic: $topic; Message: $payload" blue
+    debug "\nTopic: $topic; Message: $payload" blue
+    debug [array get lastSub]
 
+    set top [split $topic "/"]
+    foreach sn {1 2} {
+        regsub {<} $lastSub(SubTopic$sn) "/$cfg(cmndPrefix)/" lastsubtopic
+        regsub {(>)([0-9]*)} $lastsubtopic "/$cfg(pwrPostfix)/" lastsubtopic
+        set lastsubtopic [regsub {//+} [string trim $lastsubtopic {/}] {/}]
+        debug $lastsubtopic red
+        set sub [split $lastsubtopic "/"]
+        set match 1
+        foreach s $sub t $top {
+            if {$s eq "+"} continue
+            if {$s eq "#"} break
+            if {$s ne $t} {
+                set match 0
+                break
+            }
+        }
+        if {$match == 0} {
+            #debug "$lastSub(SubTopic$sn) $topic: No Match" red
+        } else {
+            #debug "$lastSub(SubTopic$sn) $topic: Match" darkgreen
+            pubsublog "s$sn: $topic, $payload"
+        }
+        if {$match == 0} continue
+    }
+}
+
+proc pubsublog {str} {
+    global freezeLogWindow
+
+    switch -- [string range $str 0 1] {
+        p1 {set tag pub1}
+        p2 {set tag pub2}
+        s1 {set tag sub1}
+        s2 {set tag sub2}
+        uk {set tag uk}
+        default {set tag ""}
+    }
+    if {![winfo exists .mqtt]} {return}
+    .mqtt.f.f5.l.t configure -state normal
+    set str [string map [list "\n" {\n}] $str]
+    set lf [expr {[.mqtt.f.f5.l.t compare end-1c > 1.0] ? "\n" : ""}]
+    .mqtt.f.f5.l.t insert end $lf "" $str $tag
+    .mqtt.f.f5.l.t delete 1.0 "end - 250 lines"
+    .mqtt.f.f5.l.t configure -state disabled
+    if {$freezeLogWindow == 1} {return}
+    .mqtt.f.f5.l.t yview end
+}
+
+proc updatepubSubCombos {w type {init 0}} {
+    global pubSubLists cfg
+
+    set list [dict get $pubSubLists $type]
+
+# Get newest entry if not initializing combobox
+    if {$init == 0 } {
+        set list [linsert $list 0 [$w get]]
+    }
+
+# Remove empty entries (except for payloads)
+    if {$type ni {PubMsg1 PubMsg2}} {
+        foreach found [lsort -decreasing [lsearch -all $list ""]] {
+            set list [lreplace $list $found $found]
+        }
+    }
+
+# Remove duplicate entries
+    set nlist {}
+    foreach l $list {
+        if {[lsearch -exact $nlist $l] == -1} {
+            lappend nlist $l
+        }
+    }
+
+# Truncate to 8 newest entries
+    set nlist [lrange $nlist 0 7]
+
+# Update to new list, set newest entry to config for persistant storage
+    dict set pubSubLists $type $nlist
+    set cfg($type) [lindex $nlist 0]
+
+# Configure combo box with new list
+    if {$nlist ne {}} {
+        $w configure -values [dict get $pubSubLists $type]
+        $w current 0
+    }
 }
 
 proc cfg_done {} {
@@ -4481,8 +4657,8 @@ proc cfg_done {} {
         array set tmpcfg [mk::get $row name value]
     }
 
-    runSubscribe -1
-    runSubscribe -2
+    #runSubscribe -1 .mqtt.f.f5.s.et1
+    #runSubscribe -2 .mqtt.f.f5.s.et2
 
     if {$tmpcfg(broker) ne $cfg(broker) || $tmpcfg(brokerPort) ne $cfg(brokerPort) \
         || $tmpcfg(userpass) ne $cfg(userpass) \
@@ -4495,6 +4671,7 @@ proc cfg_done {} {
     saveconfig
     subscribe
     destroy .mqtt
+    destroy .pubsubmenu
 }
 
 if {[hvGuiInit]} {

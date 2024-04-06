@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.129 $
-# $Date: 2024/03/24 18:57:34 $
+# $Revision: 1.130 $
+# $Date: 2024/03/31 03:51:28 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.129 2024/03/24 18:57:34 Ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.130 2024/03/31 03:51:28 Ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -61,27 +61,29 @@ array set cfg {
     pwrStatResponse   1
     rstStatResponse   0
     rstDimming        0
-    PubTopic1         ""
-    PubTopic2         ""
-    PubMsg1           ""
-    PubMsg2           ""
-    SubTopic1         ""
-    SubTopic2         ""
+    pubTopic1         ""
+    pubTopic2         ""
+    pubMsg1           ""
+    pubMsg2           ""
+    subTopic1         ""
+    subTopic2         ""
+    logTimeStamp      1
+    logTimeFormat     "%d-%T"
 }
 set cfg(txtext) [expr {$tcl_platform(platform) eq "windows" ? ".txt" : ""}]
 
 set pubSubLists {
-    PubTopic1         ""
-    PubTopic2         ""
-    PubMsg1           ""
-    PubMsg2           ""
-    SubTopic1         ""
-    SubTopic2         ""
+    pubTopic1         ""
+    pubTopic2         ""
+    pubMsg1           ""
+    pubMsg2           ""
+    subTopic1         ""
+    subTopic2         ""
 }
 
 array set lastSub {
-    SubTopic1         ""
-    SubTopic2         ""
+    subTopic1         ""
+    subTopic2         ""
 }
 
 set freezeLogWindow 0
@@ -2420,6 +2422,25 @@ proc loadconfig {} {
         }
         set saveflag 1
     }
+    if {$cfg(version) < 14} {
+    debug "old version $cfg(version)" red
+        set cfg(version) 14
+        debug "Changing cfg names\n[array get cfg]" red
+        foreach {o n} {PubTopic1 pubTopic1 PubTopic2 pubTopic2 \
+                       PubMsg1 pubMsg1 PubMsg2 pubMsg2 \
+                       SubTopic1 subTopic1 SubTopic2 subTopic2 \
+                       LogTimeStamp logTimeStamp \
+                       LogTimeFormat logTimeFormat} {
+            lassign [array get cfg $o] name val
+            if {$name ne ""} {
+                array set cfg [list $n $val]
+                array unset cfg $o
+            }
+        }
+        debug "after: [array get cfg]" darkgreen
+        set saveflag 1
+    }
+
     debug "New version $cfg(version)" green
 
     # set any missing cfg items into cfg.main
@@ -2436,7 +2457,7 @@ proc loadconfig {} {
         set saveflag 1
     }
 
-    foreach type {PubTopic1 PubTopic2 PubMsg1 PubMsg2 SubTopic1 SubTopic2} {
+    foreach type {pubTopic1 pubTopic2 pubMsg1 pubMsg2 subTopic1 subTopic2} {
         dict set pubSubLists $type $cfg($type)
     }
 
@@ -2776,33 +2797,33 @@ proc cfg_mqtt {} {
     ttk::frame .mqtt.f.f5
     ttk::labelframe .mqtt.f.f5.p -text "Publish:"
     ttk::label .mqtt.f.f5.p.lt1 -text "Topic:"  -anchor w
-    ttk::combobox .mqtt.f.f5.p.et1 -state normal -width 30 -justify center -textvariable cfg(PubTopic1)
-    bind .mqtt.f.f5.p.et1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.et1 PubTopic1]
+    ttk::combobox .mqtt.f.f5.p.et1 -state normal -width 30 -justify center -textvariable cfg(pubTopic1)
+    bind .mqtt.f.f5.p.et1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.et1 pubTopic1]
     ttk::label .mqtt.f.f5.p.lm1 -text "Payload:" -anchor w
     ttk::combobox .mqtt.f.f5.p.em1 -state normal -width 30 -justify center
-    bind .mqtt.f.f5.p.em1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.em1 PubMsg1]
+    bind .mqtt.f.f5.p.em1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.em1 pubMsg1]
     ttk::button .mqtt.f.f5.p.bp1 -text "Publish"  -command [list runPublish 1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.em1]
     ttk::checkbutton .mqtt.f.f5.p.c1 -variable pubRetain(1)
 
     ttk::label .mqtt.f.f5.p.lt2 -text "Topic:"  -anchor w
     ttk::combobox .mqtt.f.f5.p.et2 -state normal -width 30 -justify center
-    bind .mqtt.f.f5.p.et2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.et2 PubTopic2]
+    bind .mqtt.f.f5.p.et2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.et2 pubTopic2]
     ttk::label .mqtt.f.f5.p.lm2 -text "Payload:" -anchor w
     ttk::combobox .mqtt.f.f5.p.em2 -state normal -width 30 -justify center
-    bind .mqtt.f.f5.p.em2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.em2 PubMsg2]
+    bind .mqtt.f.f5.p.em2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.em2 pubMsg2]
     ttk::button .mqtt.f.f5.p.bp2 -text "Publish"  -command [list runPublish 2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.em2]
     ttk::checkbutton .mqtt.f.f5.p.c2 -variable pubRetain(2)
 
     ttk::labelframe .mqtt.f.f5.s -text "Subscribe:"
     ttk::label .mqtt.f.f5.s.lt1 -text "Topic:" -anchor w
     ttk::combobox .mqtt.f.f5.s.et1 -state normal -width 30 -justify center
-    bind .mqtt.f.f5.s.et1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.s.et1 SubTopic1]
+    bind .mqtt.f.f5.s.et1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.s.et1 subTopic1]
     ttk::button .mqtt.f.f5.s.bs1 -text "Subscribe" -command [list runSubscribe 1 .mqtt.f.f5.s.et1]
     ttk::button .mqtt.f.f5.s.bu1 -text "Unsubscribe" -command [list runSubscribe -1 .mqtt.f.f5.s.et1]
 
     ttk::label .mqtt.f.f5.s.lt2 -text "Topic:" -anchor w
     ttk::combobox .mqtt.f.f5.s.et2 -state normal -width 30 -justify center
-    bind .mqtt.f.f5.s.et2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.s.et2 SubTopic2]
+    bind .mqtt.f.f5.s.et2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.s.et2 subTopic2]
     ttk::button .mqtt.f.f5.s.bs2 -text "Subscribe" -command [list runSubscribe 2 .mqtt.f.f5.s.et2]
     ttk::button .mqtt.f.f5.s.bu2 -text "Unsubscribe" -command [list runSubscribe -2 .mqtt.f.f5.s.et2]
 
@@ -2843,32 +2864,41 @@ proc cfg_mqtt {} {
     }
     bind .mqtt.f.f5.l.t <Button-3> {tk_popup .pubsubmenu %X %Y}
 
+    ttk::frame .mqtt.f.f5.tm
+    ttk::checkbutton .mqtt.f.f5.tm.cb1 -text "Timestamp?" -variable cfg(logTimeStamp)
+    ttk::label .mqtt.f.f5.tm.l1 -text "   Format:"
+    ttk::entry .mqtt.f.f5.tm.e1 -textvariable cfg(logTimeFormat) -justify center
+    
+    grid .mqtt.f.f5.tm.cb1 .mqtt.f.f5.tm.l1 .mqtt.f.f5.tm.e1 -sticky w
+
+
     grid .mqtt.f.f5.p.lt1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.lm1 .mqtt.f.f5.p.em1 .mqtt.f.f5.p.c1 .mqtt.f.f5.p.bp1 -sticky we -padx 3
     grid .mqtt.f.f5.p.lt2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.lm2 .mqtt.f.f5.p.em2 .mqtt.f.f5.p.c2 .mqtt.f.f5.p.bp2 -sticky we -padx 3
-    grid configure .mqtt.f.f5.p     -sticky new -padx 3
+    grid configure .mqtt.f.f5.p     -sticky new  -padx 3
+    grid columnconfigure .mqtt.f.f5.p {1 3}      -weight 2
+    grid columnconfigure .mqtt.f.f5.p {0 2 4 5}  -weight 0
 
     grid .mqtt.f.f5.s.lt1 .mqtt.f.f5.s.et1 .mqtt.f.f5.s.bs1 .mqtt.f.f5.s.bu1 -sticky we -padx 3
     grid .mqtt.f.f5.s.lt2 .mqtt.f.f5.s.et2 .mqtt.f.f5.s.bs2 .mqtt.f.f5.s.bu2 -sticky we -padx 3
-    grid configure .mqtt.f.f5.s     -sticky new -padx 3
-    grid columnconfigure .mqtt.f.f5.p {1 3} -weight 2
-    grid columnconfigure .mqtt.f.f5.p {0 2 4 5} -weight 0
-    grid columnconfigure .mqtt.f.f5.s {1} -weight 2
-    grid columnconfigure .mqtt.f.f5.s {0 2 3} -weight 0
-    grid configure .mqtt.f.f5.l     -sticky new -padx 3
-    grid columnconfigure .mqtt.f.f5 all -weight 1
-    grid .mqtt.f.f5 -sticky news  -padx 5 -pady 5
+    grid configure .mqtt.f.f5.s     -sticky new  -padx 3
+    grid columnconfigure .mqtt.f.f5.s {1}        -weight 2
+    grid columnconfigure .mqtt.f.f5.s {0 2 3}    -weight 0
+    grid configure .mqtt.f.f5.l     -sticky new  -padx 3
+    grid .mqtt.f.f5.tm              -sticky news -padx 5 -pady 5
+    grid columnconfigure .mqtt.f.f5 all          -weight 1
+    grid .mqtt.f.f5                 -sticky news -padx 5 -pady 5
 
     array set pubRetain {
         1 0
         2 0
     }
 
-    updatepubSubCombos .mqtt.f.f5.p.et1 PubTopic1 1
-    updatepubSubCombos .mqtt.f.f5.p.em1 PubMsg1   1
-    updatepubSubCombos .mqtt.f.f5.p.et2 PubTopic2 1
-    updatepubSubCombos .mqtt.f.f5.p.em2 PubMsg2   1
-    updatepubSubCombos .mqtt.f.f5.s.et1 SubTopic1 1
-    updatepubSubCombos .mqtt.f.f5.s.et2 SubTopic2 1
+    updatepubSubCombos .mqtt.f.f5.p.et1 pubTopic1 1
+    updatepubSubCombos .mqtt.f.f5.p.em1 pubMsg1   1
+    updatepubSubCombos .mqtt.f.f5.p.et2 pubTopic2 1
+    updatepubSubCombos .mqtt.f.f5.p.em2 pubMsg2   1
+    updatepubSubCombos .mqtt.f.f5.s.et1 subTopic1 1
+    updatepubSubCombos .mqtt.f.f5.s.et2 subTopic2 1
 
     .mqtt.f add .mqtt.f.f5 -text "Pub/Sub" -underline 0
 
@@ -4515,18 +4545,18 @@ proc runPublish {num wp wm} {
 
 debug "runPublish:$num,$pubRetain($num);" red
     if {$num ni {1 2}} return
-    if {$cfg(PubTopic$num) eq ""} return
+    if {$cfg(pubTopic$num) eq ""} return
 
-    updatepubSubCombos $wp PubTopic$num
-    updatepubSubCombos $wm PubMsg$num
+    updatepubSubCombos $wp pubTopic$num
+    updatepubSubCombos $wm pubMsg$num
 
     if {$pubRetain($num) == 1} {
         debug "pub retain $num" darkgreen
-        mqttComm -retain pub $cfg(PubTopic$num) $cfg(PubMsg$num)
+        mqttComm -retain pub $cfg(pubTopic$num) $cfg(pubMsg$num)
     } else {
-        mqttComm pub $cfg(PubTopic$num) $cfg(PubMsg$num)
+        mqttComm pub $cfg(pubTopic$num) $cfg(pubMsg$num)
     }
-    pubsublog "p$num: Published $cfg(PubTopic$num): $cfg(PubMsg$num)"
+    pubsublog "p$num: Published $cfg(pubTopic$num): $cfg(pubMsg$num)"
 }
 
 proc runSubscribe {num ws} {
@@ -4535,23 +4565,23 @@ proc runSubscribe {num ws} {
     if {$num ni {1 2 -1 -2}} return
     set anum [expr {abs($num)}]
 
-    updatepubSubCombos $ws SubTopic$anum
+    updatepubSubCombos $ws subTopic$anum
 
-    if {$lastSub(SubTopic$anum) ne $cfg(SubTopic$anum) \
-        && $lastSub(SubTopic$anum) ne ""} {
-        mqttComm unsub $lastSub(SubTopic$anum) runSubscribecb
-        pubsublog "s$anum: Unsubscribed from $lastSub(SubTopic$anum)"
+    if {$lastSub(subTopic$anum) ne $cfg(subTopic$anum) \
+        && $lastSub(subTopic$anum) ne ""} {
+        mqttComm unsub $lastSub(subTopic$anum) runSubscribecb
+        pubsublog "s$anum: Unsubscribed from $lastSub(subTopic$anum)"
     }
 
-    if {$cfg(SubTopic$anum) ne ""} {
+    if {$cfg(subTopic$anum) ne ""} {
         if {$num in {1 2}} {
-            mqttComm sub $cfg(SubTopic$anum) runSubscribecb
-            pubsublog "s$anum: Subscribed to $cfg(SubTopic$anum)"
-            set lastSub(SubTopic$anum) $cfg(SubTopic$anum)
+            mqttComm sub $cfg(subTopic$anum) runSubscribecb
+            pubsublog "s$anum: Subscribed to $cfg(subTopic$anum)"
+            set lastSub(subTopic$anum) $cfg(subTopic$anum)
         } elseif {$num in {-1 -2}} {
-            mqttComm unsub $cfg(SubTopic$anum) runSubscribecb
-            pubsublog "s$anum: Unsubscribed from $cfg(SubTopic$anum)"
-            set lastSub(SubTopic$anum) ""
+            mqttComm unsub $cfg(subTopic$anum) runSubscribecb
+            pubsublog "s$anum: Unsubscribed from $cfg(subTopic$anum)"
+            set lastSub(subTopic$anum) ""
         }
     }
 }
@@ -4565,7 +4595,7 @@ proc runSubscribecb {topic payload args} {
 
     set top [split $topic "/"]
     foreach sn {1 2} {
-        regsub {<} $lastSub(SubTopic$sn) "/$cfg(cmndPrefix)/" lastsubtopic
+        regsub {<} $lastSub(subTopic$sn) "/$cfg(cmndPrefix)/" lastsubtopic
         regsub {(>)([0-9]*)} $lastsubtopic "/$cfg(pwrPostfix)/" lastsubtopic
         set lastsubtopic [regsub {//+} [string trim $lastsubtopic {/}] {/}]
         debug $lastsubtopic red
@@ -4590,7 +4620,7 @@ proc runSubscribecb {topic payload args} {
 }
 
 proc pubsublog {str} {
-    global freezeLogWindow
+    global cfg freezeLogWindow
 
     switch -- [string range $str 0 1] {
         p1 {set tag pub1}
@@ -4604,6 +4634,9 @@ proc pubsublog {str} {
     .mqtt.f.f5.l.t configure -state normal
     set str [string map [list "\n" {\n}] $str]
     set lf [expr {[.mqtt.f.f5.l.t compare end-1c > 1.0] ? "\n" : ""}]
+    if {$cfg(logTimeStamp)} {
+        set str "[clock format [clock seconds] -format $cfg(logTimeFormat)] $str"
+    }
     .mqtt.f.f5.l.t insert end $lf "" $str $tag
     .mqtt.f.f5.l.t delete 1.0 "end - 250 lines"
     .mqtt.f.f5.l.t configure -state disabled
@@ -4622,7 +4655,7 @@ proc updatepubSubCombos {w type {init 0}} {
     }
 
 # Remove empty entries (except for payloads)
-    if {$type ni {PubMsg1 PubMsg2}} {
+    if {$type ni {pubMsg1 pubMsg2}} {
         foreach found [lsort -decreasing [lsearch -all $list ""]] {
             set list [lreplace $list $found $found]
         }

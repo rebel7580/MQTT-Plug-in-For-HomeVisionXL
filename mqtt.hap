@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.130 $
-# $Date: 2024/03/31 03:51:28 $
+# $Revision: 1.131 $
+# $Date: 2024/04/18 01:56:50 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.130 2024/03/31 03:51:28 Ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.131 2024/04/18 01:56:50 Ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -4545,10 +4545,11 @@ proc runPublish {num wp wm} {
 
 debug "runPublish:$num,$pubRetain($num);" red
     if {$num ni {1 2}} return
-    if {$cfg(pubTopic$num) eq ""} return
 
     updatepubSubCombos $wp pubTopic$num
     updatepubSubCombos $wm pubMsg$num
+    
+    if {$cfg(pubTopic$num) eq ""} return
 
     if {$pubRetain($num) == 1} {
         debug "pub retain $num" darkgreen

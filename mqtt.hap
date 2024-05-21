@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.131 $
-# $Date: 2024/04/18 01:56:50 $
+# $Revision: 1.132 $
+# $Date: 2024/05/13 23:46:50 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.131 2024/04/18 01:56:50 Ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.132 2024/05/13 23:46:50 Ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -2858,19 +2858,23 @@ proc cfg_mqtt {} {
     $m add separator
     $m add command -label "Freeze view" -command {
         set freezeLogWindow 1
+        pack .mqtt.f.f5.tm.l2 -side right 
     }
     $m add command -label "UnFreeze view" -command {
         set freezeLogWindow 0
+        pack forget .mqtt.f.f5.tm.l2 
     }
-    bind .mqtt.f.f5.l.t <Button-3> {tk_popup .pubsubmenu %X %Y}
+
+    bind .mqtt.f.f5.l.t <Button-3> {cfg_rtclk pubsub %W %x %y %X %Y}
 
     ttk::frame .mqtt.f.f5.tm
     ttk::checkbutton .mqtt.f.f5.tm.cb1 -text "Timestamp?" -variable cfg(logTimeStamp)
     ttk::label .mqtt.f.f5.tm.l1 -text "   Format:"
     ttk::entry .mqtt.f.f5.tm.e1 -textvariable cfg(logTimeFormat) -justify center
+    ttk::label .mqtt.f.f5.tm.l2 -text "View Frozen" -foreground red -anchor e
     
-    grid .mqtt.f.f5.tm.cb1 .mqtt.f.f5.tm.l1 .mqtt.f.f5.tm.e1 -sticky w
-
+    pack  .mqtt.f.f5.tm.cb1 .mqtt.f.f5.tm.l1 .mqtt.f.f5.tm.e1 -side left
+    pack .mqtt.f.f5.tm.l2 -side right
 
     grid .mqtt.f.f5.p.lt1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.lm1 .mqtt.f.f5.p.em1 .mqtt.f.f5.p.c1 .mqtt.f.f5.p.bp1 -sticky we -padx 3
     grid .mqtt.f.f5.p.lt2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.lm2 .mqtt.f.f5.p.em2 .mqtt.f.f5.p.c2 .mqtt.f.f5.p.bp2 -sticky we -padx 3
@@ -2891,6 +2895,14 @@ proc cfg_mqtt {} {
     array set pubRetain {
         1 0
         2 0
+    }
+
+    if {$freezeLogWindow == 1} {
+        pack .mqtt.f.f5.tm.l2 -side right
+        debug "frozen" red
+    } else {
+        pack forget .mqtt.f.f5.tm.l2
+        debug "not frozen" red
     }
 
     updatepubSubCombos .mqtt.f.f5.p.et1 pubTopic1 1
@@ -3159,8 +3171,23 @@ proc cfg_device_dbl {w x y} {
 
 # put up device right-click menu
 proc cfg_rtclk {type w x y X Y} {
-    global objtypes
+    global objtypes freezeLogWindow
 
+debug "$type $w $x $y $X $Y,$freezeLogWindow" red
+
+    if {$type eq "pubsub"} {
+        if {$freezeLogWindow == 1} {
+            .pubsubmenu entryconfigure  5 -state disabled
+            .pubsubmenu entryconfigure  6 -state normal
+            debug "frozen" red
+        } else {
+            .pubsubmenu entryconfigure  6 -state disabled
+            .pubsubmenu entryconfigure  5 -state normal
+            debug "not frozen" red
+        }
+        tk_popup .pubsubmenu $X $Y
+        return
+    }
     set item [$w identify item $x $y]
     if {$item ne ""} {
         $w selection set $item
@@ -4641,8 +4668,14 @@ proc pubsublog {str} {
     .mqtt.f.f5.l.t insert end $lf "" $str $tag
     .mqtt.f.f5.l.t delete 1.0 "end - 250 lines"
     .mqtt.f.f5.l.t configure -state disabled
-    if {$freezeLogWindow == 1} {return}
-    .mqtt.f.f5.l.t yview end
+    if {$freezeLogWindow == 1} {
+        pack .mqtt.f.f5.tm.l2 -side right
+        debug "frozen" red
+    } else {
+        pack forget .mqtt.f.f5.tm.l2
+        debug "not frozen" red
+        .mqtt.f.f5.l.t yview end
+    }
 }
 
 proc updatepubSubCombos {w type {init 0}} {

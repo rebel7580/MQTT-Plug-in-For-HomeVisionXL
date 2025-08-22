@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.133 $
-# $Date: 2025/05/01 22:08:55 $
+# $Revision: 1.136 $
+# $Date: 2025/08/21 21:41:23 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.133 2025/05/01 22:08:55 Ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.136 2025/08/21 21:41:23 Ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -73,6 +73,19 @@ array set cfg {
 }
 set cfg(txtext) [expr {$tcl_platform(platform) eq "windows" ? ".txt" : ""}]
 
+array set pubRetain {
+    1 0
+    2 0
+}
+array set pubEncode {
+    1 0
+    2 0
+}
+array set subEncode {
+    1 0
+    2 0
+}
+
 array set lastSub {
     subTopic1         ""
     subTopic2         ""
@@ -123,7 +136,7 @@ set updtfp  {
 set connected  0
 set mymqtt     ""
 set logsuspend 0
-set logmqtt 1
+set logmqtt 0
 set noid 0
 set nous 0
 set yesretain 0
@@ -418,6 +431,7 @@ proc subrecv {topic msg args} {
                         if {$loglevel & 0x01} {
                             mqttLog "rx: $topic $msg"
                         }
+                        lassign $payload st val
                         if {$payload eq {}} {
                             debug "No payload: $topic: $msg" red
                         } elseif {$payload eq "on"} {
@@ -427,30 +441,44 @@ proc subrecv {topic msg args} {
                             if {$id ne "" && $id < 512} {
                                 if {$id < 256} {
                                     action flag set $id
-                                    runMacro $macro_on
-                                } elseif {$varflag & 0x01} {
+                                } else {
                                     set id [expr {$id - 256}]
+                                    if {$varflag == 0x01} {
                                     action var set $id 1
+                                    } elseif {$varflag == 0x00} {
+                                        action var set $id 100
+                                    } elseif {$varflag == 0x02} {
+                                        if {![catch {hvObjectState var [expr {$id+1}]}]} {
+                                            action var set [expr {$id+1}] 0
+                                        }
+                                        action var set $id 100
+                                    }
+                                }
                                     action var update
                                     runMacro $macro_on
-                                }
                             } elseif {$id == 512} {
                                 runMacro $macro_on
                             }
-                        } elseif {$payload eq "off"} {
+                        } elseif {$payload eq "off" || $st eq "off"} {
                             mk::set cfg.devices!$row state "Off" status 0
                             updateGUI "ext" $name state Off
                             if {[triggers $row $topic $msg "off" 0] == 2} {return}
                             if {$id ne "" && $id < 512} {
                                 if {$id < 256} {
                                     action flag clear $id
-                                    runMacro $macro_off
-                                } elseif {$varflag & 0x01} {
+                                } else {
                                     set id [expr {$id - 256}]
+                                    if {$varflag == 0x01 || $varflag == 0x00} {
                                     action var set $id 0
+                                    } elseif {$varflag == 0x02} {
+                                        if {![catch {hvObjectState var [expr {$id+1}]}]} {
+                                            action var set [expr {$id+1}] 0
+                                        }
+                                        action var set $id 0
+                                    }
+                                }
                                     action var update
                                     runMacro $macro_off
-                                }
                             } elseif {$id == 512} {
                                 runMacro $macro_off
                             }
@@ -471,7 +499,6 @@ proc subrecv {topic msg args} {
                                 }
                             }
                         } else {
-                            lassign $payload st val
                             if {($st eq "on" && \
                                 ([string is integer -strict $val] || [string is double -strict $val])) \
                              || ([string is integer -strict $st] || [string is double -strict $st])} {
@@ -491,7 +518,7 @@ proc subrecv {topic msg args} {
                                         }
                                     } else {
                                         set id [expr {$id - 256}]
-                                        if {$varflag & 0x01} {
+                                        if {$varflag == 0x01} {
                                             if {$val & 0x01} {
                                                 action var set $id 1
                                                 action var update
@@ -502,7 +529,7 @@ proc subrecv {topic msg args} {
                                                 runMacro $macro_off
                                             }
                                         } else {
-                                            if {$varflag & 0x02 && ![catch {hvObjectState var [expr {$id+1}]}]} {
+                                            if {$varflag == 0x02 && ![catch {hvObjectState var [expr {$id+1}]}]} {
                                                 action var set [expr {$id+1}] [expr {$val / 256}]
                                             }
                                             action var set $id [expr {$val % 256}]
@@ -1432,11 +1459,11 @@ proc sendCmd {args} {
 proc sendMqtt {action pre topic post cmd args} {
     global cfg mymqtt
 
-    debug "sendMqtt: $action,$pre,$topic $post $cmd $args" red
     if {![info exists mymqtt] || $mymqtt eq ""} {return}
-    lassign $args log retain
+    lassign $args log retain encode
     if {$log eq "" } {set log 0}
     if {$retain eq ""} {set retain 0}
+    if {$encode eq ""} {set encode 0}
     set npre [expr {[info exists cfg(${pre}Prefix)]?$cfg(${pre}Prefix):$pre}]
     set npost [expr {[info exists cfg(${post}Postfix)]?$cfg(${post}Postfix):$post}]
     if {$npost eq "$cfg(pwrPostfix)"} {
@@ -1448,7 +1475,12 @@ proc sendMqtt {action pre topic post cmd args} {
 
     switch $action {
         pub {
-            if {[catch {$mymqtt publish $topic $cmd $cfg(publishQOS) $retain} rc]} {
+            if {$encode == 1} {
+                set payload [encoding convertto utf-8 $cmd]
+            } else {
+                set payload $cmd
+            }
+            if {[catch {$mymqtt publish $topic $payload $cfg(publishQOS) $retain} rc]} {
                 debug "Publish failed: $topic, $cmd: $rc" red
             } else {
                 debug "Published $topic, $cmd!"
@@ -1678,11 +1710,11 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
     global cfg
 
     if {$object eq "x10"} {
-        set fid [string map {" " _} [hvObjectId x10 $id]]
+        set fid [string map {" " -} [hvObjectId x10 $id]]
     } elseif {$object in {input output}} {
         set fid [string toupper [string index $object 0]][hvObjectId $object $id]
     } else {
-        set fid "[string toupper [string range $object 0 1]]_$id"
+        set fid "[string toupper [string range $object 0 1]]-$id"
     }
 
     set objsuffix [string totitle $object]
@@ -1771,11 +1803,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov pl_on "Set"
             dict set discov pl_off "Clear"
             dict unset discov ret
-            if {[regexp {dc:(\w+)} [hvObjectDesc flag $id] --> dc]} {
-                if {$dc ne ""} {
-                    dict set discov dev_cla $dc
-                }
-            }
+            set discov [dict merge $discov [getDiscoveryOptions flag $id]]
         }
         output {
             set device "switch"
@@ -1814,11 +1842,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov stat_t "$stat"
             dict set discov val_tpl "{{ value_json.STATE }}"
             dict unset discov ret
-            if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
-                if {$dc ne ""} {
-                    dict set discov dev_cla $dc
-                }
-            }
+            set discov [dict merge $discov [getDiscoveryOptions var $id]]
         }
         var_n {
             set device "number"
@@ -1826,55 +1850,28 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov val_tpl "{{ value_json.STATE }}"
             dict set discov cmd_t "$cmnd"
             dict set discov max 255
-            if {[regexp {max:(\d+)} [hvObjectDesc var $id] --> max]} {
-                if {$max ne ""} {
-                    dict set discov max $max
-                }
-            }
-            dict set discov min 0
-            if {[regexp {min:(\d+)} [hvObjectDesc var $id] --> min]} {
-                if {$min ne ""} {
-                    dict set discov min $min
-                }
-            }
-            if {[regexp {dc:(\w+)} [hvObjectDesc var $id] --> dc]} {
-                if {$dc ne ""} {
-                    dict set discov dev_cla $dc
-                }
-            }
+            set discov [dict merge $discov [getDiscoveryOptions var $id]]
         }
         timer {
             set device "sensor"
             dict set discov stat_t "$stat"
             dict set discov val_tpl "{{ value_json.STATE }}"
             dict unset discov ret
-            if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
-                if {$dc ne ""} {
-                    dict set discov dev_cla $dc
-                }
-            }
+            set discov [dict merge $discov [getDiscoveryOptions timer $id]]
         }
         timer_t {
             set device "sensor"
             dict set discov stat_t "$stat"
             dict set discov val_tpl "{{ value_json.TIME }}"
             dict unset discov ret
-            if {[regexp {dc:(\w+)} [hvObjectDesc timer $id] --> dc]} {
-                if {$dc ne ""} {
-                    dict set discov dev_cla $dc
-                }
-            }
+            set discov [dict merge $discov [getDiscoveryOptions timer $id]]
         }
         analog {
             set device "sensor"
             dict set discov stat_t "$stat"
             dict set discov val_tpl "{{ value_json.STATE }}"
             dict unset discov ret
-            if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
-                if {$dc ne ""} {
-                    dict set discov dev_cla $dc
-                }
-            }
+            set discov [dict merge $discov [getDiscoveryOptions analog $id]]
         }
         temp {
             set device "sensor"
@@ -1883,19 +1880,11 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict unset discov ret
             dict set discov dev_cla "temperature"
             if {[hvVariable TempScale] eq -1} {
-                dict set discov unit_of_meas "C"
+                dict set discov unit_of_meas "°C"
             } else {
-                dict set discov unit_of_meas "F"
+                dict set discov unit_of_meas "°F"
             }
-            if {[regexp {dc:(\w+)([\-F|\-f|\-C|\-c]*)} [hvObjectDesc $object $id] --> dc uom]} {
-                if {$dc ne ""} {
-                    dict set discov dev_cla $dc
-                    set uom [string index $uom 1]
-                    if {$uom in {F f C c}} {
-                        dict set discov unit_of_meas "[string toupper $uom]"
-                    }
-                }
-            }
+            set discov [dict merge $discov [getDiscoveryOptions temp $id]]
         }
         input {
             set device "binary_sensor"
@@ -1904,11 +1893,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov pl_on "[hvObjectLabel $object $id 0]"
             dict set discov pl_off "[hvObjectLabel $object $id 1]"
             dict unset discov ret
-            if {[regexp {dc:(\w+)} [hvObjectDesc $object $id] --> dc]} {
-                if {$dc ne ""} {
-                    dict set discov dev_cla $dc
-                }
-            }
+            set discov [dict merge $discov [getDiscoveryOptions input $id]]
         }
         hvac {
             set preset 1
@@ -1938,7 +1923,11 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov temp_stat_tpl "{{ value_json.Setpoint }}"
             dict set discov fan_mode_stat_t "~"
             dict set discov fan_mode_stat_tpl "{{ \\\"fan\\\" + value_json.Fan|lower }}"
+            if {[hvVariable TempScale] eq -1} {
+                dict set discov temp_unit "C"
+            } else {
             dict set discov temp_unit "F"
+[            }
             dict set discov precision 1.0
             dict set discov max_temp 99
             dict set discov min_temp 55
@@ -1990,8 +1979,44 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
         } else {
             set log 0
         }
-        sendMqtt pub cmnd $fulltopic pwr $js $log 1
+        sendMqtt pub cmnd $fulltopic pwr $js $log 1 1
     }
+}
+
+# Parse object Description Field for discovery items
+proc getDiscoveryOptions {object id} {
+
+    set discov {}
+    if {![catch {hvObjectDesc $object $id} desc]} {
+
+    debug "desc:$desc" red
+
+        if {[regexp {max:(\d+)} $desc --> max]} {
+            if {$max ne ""} {
+                dict set discov max $max
+            }
+        }
+        if {[regexp {min:(\d+)} $desc --> min]} {
+            if {$min ne ""} {
+                dict set discov min $min
+            }
+        }
+        if {[regexp {dc:(\w+)} $desc --> dc]} {
+            if {$dc ne ""} {
+                dict set discov dev_cla $dc
+            }
+        }
+        if {[regexp {uom:(\w+|%|°[FfCc])} $desc --> uom]} {
+            if {$uom ne ""} {
+                dict set discov unit_of_meas $uom
+                if {$uom in {F f C c}} {
+                    dict set discov unit_of_meas "°[string toupper $uom]"
+                }
+            }
+        }
+        debug "descdiscov:$discov" red
+    }
+    return $discov
 }
 
 #! Write MQTT status information to log file
@@ -2074,14 +2099,16 @@ proc restorelogging {} {
 #
 # Examples:
 #    mqttComm {-log} sub|unsub  <topic>|topic callback
-#    mqttComm {-exactstat -nodim -log -retain} stat|cmnd <topic>|topic {payload}
-#    mqttComm {-log -retain} pub <i>topic</i> {payload}
+#    mqttComm {-exactstat -nodim -log -retain -encode} stat|cmnd <topic>|topic {payload}
+#    mqttComm {-log -retain -encode} pub <i>topic</i> {payload}
 #
 # "type" is the name calling plugin's id. (Deprecated.)
 # -log: log this command to MQTT log.
 # -retain: retain this message.
 # -exactstat: Sends a pwr stat regardless of power/result settings.
 # -nodim: Don't include Dimmming in RESULT response
+# -encode: Do UTF-8 encoding of payload
+#
 # "action" is "sub"   - subscribe this topic
 #             "unsub" - unsubscribe this topic
 #             "stat"  - send status for topic/payload
@@ -2098,14 +2125,15 @@ hvPublic mqttComm
 proc mqttComm {args} {
     global cfg mymqtt
 
-    debug "mqttComm: $args" red
+#    debug "mqttComm: $args" red
     if {![info exists mymqtt] || $mymqtt eq ""} {return ""}
     set log 0
     set retain 0
     set exactstat 0
     set dim 1
+    set encode 0
     set nargs $args
-    if {[lindex $nargs 0] ni {sub unsub cmnd stat pub -log -retain -exactstat -nodim}} {
+    if {[lindex $nargs 0] ni {sub unsub cmnd stat pub -log -retain -exactstat -nodim -encode}} {
         set nargs [lrange $args 1 end]
     }
     while 1 {
@@ -2129,6 +2157,11 @@ proc mqttComm {args} {
             set nargs [lrange $nargs 1 end]
             continue
         }
+        if {[lindex $nargs 0] eq "-encode"} {
+            set encode 1
+            set nargs [lrange $nargs 1 end]
+            continue
+        }
         break
     }
     set cb_pl [lassign $nargs action topic]
@@ -2146,13 +2179,13 @@ proc mqttComm {args} {
     } elseif {$action eq "stat"} {
         if {$cb_pl eq ""} {return 0}
         if {$exactstat || $cfg(pwrStatResponse)} {
-            sendMqtt pub stat $topic pwr [join $cb_pl] $log $retain
+            sendMqtt pub stat $topic pwr [join $cb_pl] $log $retain $encode
         }
         if {!$exactstat && $cfg(rstStatResponse)} {
-            sendMqtt pub stat $topic rst [setResponse [list $cfg(pwrPostfix) [join $cb_pl]] $dim] $log $retain
+            sendMqtt pub stat $topic rst [setResponse [list $cfg(pwrPostfix) [join $cb_pl]] $dim] $log $retain $encode
         }
     } elseif {$action in {cmnd pub}} {
-        sendMqtt pub cmnd $topic pwr [join $cb_pl] $log $retain
+        sendMqtt pub cmnd $topic pwr [join $cb_pl] $log $retain $encode
     } else {
         return 0
     }
@@ -2497,7 +2530,7 @@ proc saveconfig {{top ""}} {
 
 # MQTT configuration screen
 proc cfg_mqtt {} {
-    global cfg noid retain pubRetain freezeLogWindow
+    global cfg noid retain pubRetain pubEncode subEncode freezeLogWindow
 
     if {[winfo exists .mqtt]} {
         wm withdraw .mqtt
@@ -2798,6 +2831,8 @@ proc cfg_mqtt {} {
     # PubSub Tab
     ttk::frame .mqtt.f.f5
     ttk::labelframe .mqtt.f.f5.p -text "Publish:"
+    ttk::label .mqtt.f.f5.p.lr1 -text "R"
+    ttk::label .mqtt.f.f5.p.le1 -text "E"
     ttk::label .mqtt.f.f5.p.lt1 -text "Topic:"  -anchor w
     ttk::combobox .mqtt.f.f5.p.et1 -state normal -width 30 -justify center
     bind .mqtt.f.f5.p.et1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.et1 pubTopic1]
@@ -2806,6 +2841,7 @@ proc cfg_mqtt {} {
     bind .mqtt.f.f5.p.em1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.em1 pubMsg1]
     ttk::button .mqtt.f.f5.p.bp1 -text "Publish"  -command [list runPublish 1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.em1]
     ttk::checkbutton .mqtt.f.f5.p.c1 -variable pubRetain(1)
+    ttk::checkbutton .mqtt.f.f5.p.ce1 -variable pubEncode(1)
 
     ttk::label .mqtt.f.f5.p.lt2 -text "Topic:"  -anchor w
     ttk::combobox .mqtt.f.f5.p.et2 -state normal -width 30 -justify center
@@ -2815,17 +2851,21 @@ proc cfg_mqtt {} {
     bind .mqtt.f.f5.p.em2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.p.em2 pubMsg2]
     ttk::button .mqtt.f.f5.p.bp2 -text "Publish"  -command [list runPublish 2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.em2]
     ttk::checkbutton .mqtt.f.f5.p.c2 -variable pubRetain(2)
+    ttk::checkbutton .mqtt.f.f5.p.ce2 -variable pubEncode(2)
 
     ttk::labelframe .mqtt.f.f5.s -text "Subscribe:"
+    ttk::label .mqtt.f.f5.s.le1 -text "U"
     ttk::label .mqtt.f.f5.s.lt1 -text "Topic:" -anchor w
     ttk::combobox .mqtt.f.f5.s.et1 -state normal -width 30 -justify center
     bind .mqtt.f.f5.s.et1 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.s.et1 subTopic1]
+    ttk::checkbutton .mqtt.f.f5.s.ce1 -variable subEncode(1)
     ttk::button .mqtt.f.f5.s.bs1 -text "Subscribe" -command [list runSubscribe 1 .mqtt.f.f5.s.et1]
     ttk::button .mqtt.f.f5.s.bu1 -text "Unsubscribe" -command [list runSubscribe -1 .mqtt.f.f5.s.et1]
 
     ttk::label .mqtt.f.f5.s.lt2 -text "Topic:" -anchor w
     ttk::combobox .mqtt.f.f5.s.et2 -state normal -width 30 -justify center
     bind .mqtt.f.f5.s.et2 <<ComboboxSelected>> [list updatepubSubCombos .mqtt.f.f5.s.et2 subTopic2]
+    ttk::checkbutton .mqtt.f.f5.s.ce2 -variable subEncode(2)
     ttk::button .mqtt.f.f5.s.bs2 -text "Subscribe" -command [list runSubscribe 2 .mqtt.f.f5.s.et2]
     ttk::button .mqtt.f.f5.s.bu2 -text "Unsubscribe" -command [list runSubscribe -2 .mqtt.f.f5.s.et2]
 
@@ -2878,14 +2918,16 @@ proc cfg_mqtt {} {
     pack  .mqtt.f.f5.tm.cb1 .mqtt.f.f5.tm.l1 .mqtt.f.f5.tm.e1 -side left
     pack .mqtt.f.f5.tm.l2 -side right
 
-    grid .mqtt.f.f5.p.lt1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.lm1 .mqtt.f.f5.p.em1 .mqtt.f.f5.p.c1 .mqtt.f.f5.p.bp1 -sticky we -padx 3
-    grid .mqtt.f.f5.p.lt2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.lm2 .mqtt.f.f5.p.em2 .mqtt.f.f5.p.c2 .mqtt.f.f5.p.bp2 -sticky we -padx 3
+    grid x x x x .mqtt.f.f5.p.lr1 .mqtt.f.f5.p.le1
+    grid .mqtt.f.f5.p.lt1 .mqtt.f.f5.p.et1 .mqtt.f.f5.p.lm1 .mqtt.f.f5.p.em1 .mqtt.f.f5.p.c1 .mqtt.f.f5.p.ce1 .mqtt.f.f5.p.bp1 -sticky we -padx 3
+    grid .mqtt.f.f5.p.lt2 .mqtt.f.f5.p.et2 .mqtt.f.f5.p.lm2 .mqtt.f.f5.p.em2 .mqtt.f.f5.p.c2 .mqtt.f.f5.p.ce2 .mqtt.f.f5.p.bp2 -sticky we -padx 3
     grid configure .mqtt.f.f5.p     -sticky new  -padx 3
     grid columnconfigure .mqtt.f.f5.p {1 3}      -weight 2
     grid columnconfigure .mqtt.f.f5.p {0 2 4 5}  -weight 0
 
-    grid .mqtt.f.f5.s.lt1 .mqtt.f.f5.s.et1 .mqtt.f.f5.s.bs1 .mqtt.f.f5.s.bu1 -sticky we -padx 3
-    grid .mqtt.f.f5.s.lt2 .mqtt.f.f5.s.et2 .mqtt.f.f5.s.bs2 .mqtt.f.f5.s.bu2 -sticky we -padx 3
+    grid x x .mqtt.f.f5.s.le1
+    grid .mqtt.f.f5.s.lt1 .mqtt.f.f5.s.et1 .mqtt.f.f5.s.ce1 .mqtt.f.f5.s.bs1 .mqtt.f.f5.s.bu1 -sticky we -padx 3
+    grid .mqtt.f.f5.s.lt2 .mqtt.f.f5.s.et2 .mqtt.f.f5.s.ce2 .mqtt.f.f5.s.bs2 .mqtt.f.f5.s.bu2 -sticky we -padx 3
     grid configure .mqtt.f.f5.s     -sticky new  -padx 3
     grid columnconfigure .mqtt.f.f5.s {1}        -weight 2
     grid columnconfigure .mqtt.f.f5.s {0 2 3}    -weight 0
@@ -2894,11 +2936,6 @@ proc cfg_mqtt {} {
     grid columnconfigure .mqtt.f.f5 all          -weight 1
     grid .mqtt.f.f5                 -sticky news -padx 5 -pady 5
 
-    array set pubRetain {
-        1 0
-        2 0
-    }
-    
     if {$freezeLogWindow == 1} {
         pack .mqtt.f.f5.tm.l2 -side right
         debug "frozen" red
@@ -4220,7 +4257,6 @@ proc cfg_sortlistx {type} {
                 set rows [mk::select cfg.$device -rsort topic]
             }
         }
-
         $win delete [$win children {}]
         if {![llength $rows]} {
             return
@@ -4269,7 +4305,11 @@ proc cfg_sortlistx {type} {
                 if {$object eq "x10"} {
                     lappend values [string map {" " -} [hvObjectId x10 $id]]
                 } elseif {$object in {input output}} {
-                    lappend values [string toupper [string index $object 0]][hvObjectId $object $id]
+                    if {[catch {hvObjectId $object $id} nid]} {
+                        set nid "$id?"
+                        set values [lreplace $values 1 1 "red"]
+                    }
+                    lappend values [string toupper [string index $object 0]]$nid
                 } else {
                     lappend values "[string toupper [string range $object 0 1]]-$id"
                 }
@@ -4282,32 +4322,33 @@ proc cfg_sortlistx {type} {
             }
             if {$cfg(sortX10) != 0} {
                 # Sort by Object Type then ID
+            if {$cfg(sortX10) == 1} {
+                set types [lsort -integer -unique $types]
+            } elseif {$cfg(sortX10) == -1} {
+                set types [lsort -integer -unique -decreasing $types]
+            } else {
+                foreach tp $types {dict set tmp $tp 1}
+                set types [dict keys $tmp]
+            }
+            foreach type $types {
+                set tempvalues {}
+                foreach l $allvalues {
+                    if {[lindex $l 6] == $type} {
+                        lappend tempvalues $l
+                    }
+                }
                 if {$cfg(sortX10) == 1} {
-                    set types [lsort -integer -unique $types]
+                    set tempvalues [lsort -integer -index 0 $tempvalues]
                 } elseif {$cfg(sortX10) == -1} {
-                    set types [lsort -integer -unique -decreasing $types]
-                } else {
-                    foreach tp $types {dict set tmp $tp 1}
-                    set types [dict keys $tmp]
+                    set tempvalues [lsort -integer -index 0 -decreasing $tempvalues]
                 }
-                foreach type $types {
-                    set tempvalues {}
-                    foreach l $allvalues {
-                        if {[lindex $l 6] == $type} {
-                            lappend tempvalues $l
-                        }
-                    }
-                    if {$cfg(sortX10) == 1} {
-                        set tempvalues [lsort -integer -index 0 $tempvalues]
-                    } elseif {$cfg(sortX10) == -1} {
-                        set tempvalues [lsort -integer -index 0 -decreasing $tempvalues]
-                    }
-                    foreach values $tempvalues {
+                foreach values $tempvalues {
                         if {$cfg(allEnable) == 1 || [lindex $objEnable [lindex $values 6]] == 1} {
-                            $win insert {} end -id [lindex $values 2] -values [lrange $values 2 end] -tags [lindex $values 1]
-                        }
-                    }
+                    $win insert {} end -id [lindex $values 2] -values [lrange $values 2 end] -tags [lindex $values 1]
+                            debug "tags:[lindex $values 1]" red
                 }
+            }
+        }
             } else {
                 # Sort by Name or Topic
                 foreach values $allvalues {
@@ -4588,9 +4629,9 @@ proc createmacrolist {widget var} {
 }
 
 proc runPublish {num wp wm} {
-    global cfg pubRetain
+    global cfg pubRetain pubEncode
 
-debug "runPublish:$num,$pubRetain($num),wp:$wp,wm:$wm;" red
+debug "runPublish:$num,$pubRetain($num),$pubEncode($num),wp:$wp,wm:$wm;" red
     if {$num ni {1 2}} return
 
     updatepubSubCombos $wp pubTopic$num
@@ -4598,12 +4639,17 @@ debug "runPublish:$num,$pubRetain($num),wp:$wp,wm:$wm;" red
     
     if {$cfg(pubTopic$num) eq ""} return
 
+    set options ""
     if {$pubRetain($num) == 1} {
         debug "pub retain $num" darkgreen
-        mqttComm -retain pub [lindex $cfg(pubTopic$num) 0] [lindex $cfg(pubMsg$num) 0]
-    } else {
-        mqttComm pub [lindex $cfg(pubTopic$num) 0] [lindex $cfg(pubMsg$num) 0]
+        set options "-retain"
     }
+    if {$pubEncode($num) == 1} {
+        debug "pub encode $num" darkgreen
+        lappend options "-encode"
+    }
+
+    mqttComm {*}$options pub [lindex $cfg(pubTopic$num) 0] [lindex $cfg(pubMsg$num) 0]
     pubsublog "p$num: [lindex $cfg(pubTopic$num) 0] [lindex $cfg(pubMsg$num) 0]"
 }
 
@@ -4636,7 +4682,7 @@ proc runSubscribe {num ws} {
 
 hvPublic runSubscribecb
 proc runSubscribecb {topic payload args} {
-    global lastSub cfg
+    global lastSub cfg subEncode
 
     set top [split $topic "/"]
     foreach sn {1 2} {
@@ -4659,6 +4705,12 @@ proc runSubscribecb {topic payload args} {
             continue
         } else {
             debug "$lastSub(subTopic$sn) $topic: Match" darkgreen
+            if {$subEncode($sn) == 1} {
+                debug "converting! $payload" red
+                set payload [encoding convertfrom utf-8 $payload]
+                debug "converted! $payload" blue
+
+            }
             pubsublog "s$sn: $topic, $payload"
         }
     }
@@ -4812,6 +4864,14 @@ proc cinit {} {
     }
 }
 
+proc ccinit {} {
+    global connected
+
+    debug "Connected to Controller!" red
+    set connected 1
+    cinit
+}
+
 proc discinit {} {
     global connected
 
@@ -4824,7 +4884,8 @@ proc discinit {} {
 # End Configuration section
 
 # Start when HomeVisionXL is ready
-hvEventHook connect [list set connected 1]
+hvEventHook connect ccinit
+# Unsubscribe and wait for reconnect if disconnected
 hvEventHook disconnect discinit
 # Reconfigure when a new schedule is opened
 hvEventHook ready init

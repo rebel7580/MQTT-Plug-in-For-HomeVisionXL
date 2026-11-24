@@ -1,15 +1,15 @@
 # MQTT plugin for HomeVision - Ron Boston
 # Parts borrowed from plug-ins written by Schelte Bron
 # Version 1.0
-# $Revision: 1.136 $
-# $Date: 2025/08/21 21:41:23 $
+# $Revision: 1.139 $
+# $Date: 2026/11/23 19:02:10 $
 
 hvImport debug
 hvImport action
 hvImport -name cnetio netio
 hvImport -name cnetioaction netioaction
 
-set version {$Id: hvmqtt.hap,v 1.136 2025/08/21 21:41:23 Ron Exp $}
+set version {$Id: hvmqtt.hap,v 1.139 2026/11/23 19:02:10 Ron Exp $}
 debug "$version" blue
 
 tcl::tm::path add [file dirname [info script]]
@@ -444,7 +444,7 @@ proc subrecv {topic msg args} {
                                 } else {
                                     set id [expr {$id - 256}]
                                     if {$varflag == 0x01} {
-                                    action var set $id 1
+                                        action var set $id 1
                                     } elseif {$varflag == 0x00} {
                                         action var set $id 100
                                     } elseif {$varflag == 0x02} {
@@ -454,8 +454,8 @@ proc subrecv {topic msg args} {
                                         action var set $id 100
                                     }
                                 }
-                                    action var update
-                                    runMacro $macro_on
+                                action var update
+                                runMacro $macro_on
                             } elseif {$id == 512} {
                                 runMacro $macro_on
                             }
@@ -469,7 +469,7 @@ proc subrecv {topic msg args} {
                                 } else {
                                     set id [expr {$id - 256}]
                                     if {$varflag == 0x01 || $varflag == 0x00} {
-                                    action var set $id 0
+                                        action var set $id 0
                                     } elseif {$varflag == 0x02} {
                                         if {![catch {hvObjectState var [expr {$id+1}]}]} {
                                             action var set [expr {$id+1}] 0
@@ -477,8 +477,8 @@ proc subrecv {topic msg args} {
                                         action var set $id 0
                                     }
                                 }
-                                    action var update
-                                    runMacro $macro_off
+                                action var update
+                                runMacro $macro_off
                             } elseif {$id == 512} {
                                 runMacro $macro_off
                             }
@@ -1459,6 +1459,7 @@ proc sendCmd {args} {
 proc sendMqtt {action pre topic post cmd args} {
     global cfg mymqtt
 
+#    debug "sendMqtt: $action,$pre,$topic $post $cmd $args" red
     if {![info exists mymqtt] || $mymqtt eq ""} {return}
     lassign $args log retain encode
     if {$log eq "" } {set log 0}
@@ -1879,6 +1880,7 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             dict set discov val_tpl "{{ value_json.STATE }}"
             dict unset discov ret
             dict set discov dev_cla "temperature"
+            dict set discov stat_cla measurement
             if {[hvVariable TempScale] eq -1} {
                 dict set discov unit_of_meas "°C"
             } else {
@@ -1926,8 +1928,8 @@ proc sendDiscovery {noid nous retain nodevice add id name topic object type  mod
             if {[hvVariable TempScale] eq -1} {
                 dict set discov temp_unit "C"
             } else {
-            dict set discov temp_unit "F"
-[            }
+                dict set discov temp_unit "F"
+            }
             dict set discov precision 1.0
             dict set discov max_temp 99
             dict set discov min_temp 55
@@ -2004,6 +2006,11 @@ proc getDiscoveryOptions {object id} {
         if {[regexp {dc:(\w+)} $desc --> dc]} {
             if {$dc ne ""} {
                 dict set discov dev_cla $dc
+            }
+        }
+        if {[regexp {sc:(\w+)} $desc --> sc]} {
+            if {$sc ne ""} {
+                dict set discov stat_cla $sc
             }
         }
         if {[regexp {uom:(\w+|%|°[FfCc])} $desc --> uom]} {
@@ -2750,7 +2757,7 @@ proc cfg_mqtt {} {
 
     ttk::checkbutton .mqtt.f.f2.c31 -variable cfg(logging) -text "Create log file" -command cfg_logsel
     ttk::label .mqtt.f.f2.l31 -text "Log Folder:" -anchor e
-    ttk::entry .mqtt.f.f2.e31  -textvariable cfg(logpath) -state readonly
+    ttk::entry .mqtt.f.f2.e31  -textvariable cfg(logpath)
     ttk::button .mqtt.f.f2.b31 -width 0 -text "..." -command [list sel_directory .mqtt cfg(logpath)]
     ttk::label .mqtt.f.f2.l33 -text "Log File Extension:" -anchor e
     ttk::entry .mqtt.f.f2.e33 -textvariable cfg(txtext)
@@ -2875,15 +2882,16 @@ proc cfg_mqtt {} {
     ttk::scrollbar .mqtt.f.f5.l.s -command {.mqtt.f.f5.l.t yview}
     pack .mqtt.f.f5.l.s -side right -fill y
     pack .mqtt.f.f5.l.t -side right -fill both -expand 1
-    .mqtt.f.f5.p.et1 configure -foreground #c000e0
-    .mqtt.f.f5.p.et2 configure -foreground #ff0000
-    .mqtt.f.f5.s.et1 configure -foreground #00c000
-    .mqtt.f.f5.s.et2 configure -foreground #0000ff
-    .mqtt.f.f5.l.t tag configure pub1 -foreground #c000e0 -background #f0f0f0
-    .mqtt.f.f5.l.t tag configure pub2 -foreground #ff0000 -background #f0f0f0
+    .mqtt.f.f5.p.et1   configure      -foreground #c000e0
+    .mqtt.f.f5.p.et2   configure      -foreground #ff0000
+    .mqtt.f.f5.s.et1   configure      -foreground #00c000
+    .mqtt.f.f5.s.et2   configure      -foreground #0000ff
     .mqtt.f.f5.l.t tag configure sub1 -foreground #00c000
     .mqtt.f.f5.l.t tag configure sub2 -foreground #0000ff
-    .mqtt.f.f5.l.t tag configure uk -foreground #000000
+    .mqtt.f.f5.l.t tag configure pub1 -foreground #c000e0
+    .mqtt.f.f5.l.t tag configure pub2 -foreground #ff0000
+    .mqtt.f.f5.l.t tag configure sel  -background #f0f0f0
+    .mqtt.f.f5.l.t tag configure uk   -foreground #000000
     set m [menu .pubsubmenu]
     $m add command -label "Select all" -command {
         .mqtt.f.f5.l.t tag add sel 1.0 end-1c
@@ -2938,10 +2946,10 @@ proc cfg_mqtt {} {
 
     if {$freezeLogWindow == 1} {
         pack .mqtt.f.f5.tm.l2 -side right
-        debug "frozen" red
+#        debug "frozen" red
     } else {
         pack forget .mqtt.f.f5.tm.l2
-        debug "not frozen" red
+#        debug "not frozen" red
     }
 
     updatepubSubCombos .mqtt.f.f5.p.et1 pubTopic1 1
@@ -3040,7 +3048,7 @@ proc cfg_mqtt {} {
 set enableDiscovery 0
 proc enableDiscovery {} {
     global enableDiscovery
-debug "run enable:$enableDiscovery" red
+#   debug "run enable:$enableDiscovery" red
     if {$enableDiscovery == 1} {
         set enableDiscovery 0
         .mqtt.f tab .mqtt.f.f4 -state hidden
@@ -3218,11 +3226,11 @@ debug "$type $w $x $y $X $Y,$freezeLogWindow" red
         if {$freezeLogWindow == 1} {
             .pubsubmenu entryconfigure  5 -state disabled
             .pubsubmenu entryconfigure  6 -state normal
-            debug "frozen" red
+#            debug "frozen" red
         } else {
             .pubsubmenu entryconfigure  6 -state disabled
             .pubsubmenu entryconfigure  5 -state normal
-            debug "not frozen" red
+#            debug "not frozen" red
         }
         tk_popup .pubsubmenu $X $Y
         return
@@ -4322,33 +4330,33 @@ proc cfg_sortlistx {type} {
             }
             if {$cfg(sortX10) != 0} {
                 # Sort by Object Type then ID
-            if {$cfg(sortX10) == 1} {
-                set types [lsort -integer -unique $types]
-            } elseif {$cfg(sortX10) == -1} {
-                set types [lsort -integer -unique -decreasing $types]
-            } else {
-                foreach tp $types {dict set tmp $tp 1}
-                set types [dict keys $tmp]
-            }
-            foreach type $types {
-                set tempvalues {}
-                foreach l $allvalues {
-                    if {[lindex $l 6] == $type} {
-                        lappend tempvalues $l
+                if {$cfg(sortX10) == 1} {
+                    set types [lsort -integer -unique $types]
+                } elseif {$cfg(sortX10) == -1} {
+                    set types [lsort -integer -unique -decreasing $types]
+                } else {
+                    foreach tp $types {dict set tmp $tp 1}
+                    set types [dict keys $tmp]
+                }
+                foreach type $types {
+                    set tempvalues {}
+                    foreach l $allvalues {
+                        if {[lindex $l 6] == $type} {
+                            lappend tempvalues $l
+                        }
+                    }
+                    if {$cfg(sortX10) == 1} {
+                        set tempvalues [lsort -integer -index 0 $tempvalues]
+                    } elseif {$cfg(sortX10) == -1} {
+                        set tempvalues [lsort -integer -index 0 -decreasing $tempvalues]
+                    }
+                    foreach values $tempvalues {
+                        if {$cfg(allEnable) == 1 || [lindex $objEnable [lindex $values 6]] == 1} {
+                            $win insert {} end -id [lindex $values 2] -values [lrange $values 2 end] -tags [lindex $values 1]
+                            debug "tags:[lindex $values 1]" red
+                        }
                     }
                 }
-                if {$cfg(sortX10) == 1} {
-                    set tempvalues [lsort -integer -index 0 $tempvalues]
-                } elseif {$cfg(sortX10) == -1} {
-                    set tempvalues [lsort -integer -index 0 -decreasing $tempvalues]
-                }
-                foreach values $tempvalues {
-                        if {$cfg(allEnable) == 1 || [lindex $objEnable [lindex $values 6]] == 1} {
-                    $win insert {} end -id [lindex $values 2] -values [lrange $values 2 end] -tags [lindex $values 1]
-                            debug "tags:[lindex $values 1]" red
-                }
-            }
-        }
             } else {
                 # Sort by Name or Topic
                 foreach values $allvalues {
@@ -4701,10 +4709,10 @@ proc runSubscribecb {topic payload args} {
             }
         }
         if {$match == 0} {
-            debug "$lastSub(subTopic$sn) $topic: No Match" red
+#            debug "$lastSub(subTopic$sn) $topic: No Match" red
             continue
         } else {
-            debug "$lastSub(subTopic$sn) $topic: Match" darkgreen
+#            debug "$lastSub(subTopic$sn) $topic: Match" darkgreen
             if {$subEncode($sn) == 1} {
                 debug "converting! $payload" red
                 set payload [encoding convertfrom utf-8 $payload]
@@ -4738,11 +4746,11 @@ proc pubsublog {str} {
     .mqtt.f.f5.l.t delete 1.0 "end - 250 lines"
     .mqtt.f.f5.l.t configure -state disabled
     if {$freezeLogWindow == 1} {
-        pack .mqtt.f.f5.tm.l2 -side right
-        debug "frozen" red
+#        pack .mqtt.f.f5.tm.l2 -side right
+#        debug "frozen" red
     } else {
         pack forget .mqtt.f.f5.tm.l2
-        debug "not frozen" red
+#        debug "not frozen" red
         .mqtt.f.f5.l.t yview end
     }
 }
